@@ -1,0 +1,1437 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## PFR Bad Throw %
+
+### Get the data and save it locally
+```{r}
+library(tidyverse)
+library(rvest)
+
+# scrape data from PFR----------------------------------------------------------
+url <- "https://www.pro-football-reference.com/years/2019/passing_advanced.htm"
+pfr_raw <- url %>%
+  read_html() %>%
+  html_table() %>%
+  as.data.frame()
+
+# clean the scraped data--------------------------------------------------------
+
+# rename the columns as the actual column names are saved in the first row now
+colnames(pfr_raw) <- make.names(pfr_raw[1, ], unique = TRUE, allow_ = TRUE)
+
+# drop the first row and select the columns we are interested in
+pfr <- pfr_raw %>%
+  slice(-1) %>%
+  select(Player, Tm, IAY.PA, Bad., Att) %>%
+  rename(team = Tm) %>%
+  mutate(
+    # pfr uses different team abbreviations than nflfastR, fix them
+    team = case_when(
+      team == "GNB" ~ "GB",
+      team == "KAN" ~ "KC",
+      team == "NOR" ~ "NO",
+      team == "NWE" ~ "NE",
+      team == "SFO" ~ "SF",
+      team == "TAM" ~ "TB",
+      TRUE ~ team
+    ),
+    # repair player names
+    Player = str_replace(Player, "\\*", ""),
+    Player = str_replace(Player, "\\+", ""),
+
+    # make interesting columns numeric
+    IAY.PA = as.numeric(IAY.PA),
+    Bad. = as.numeric(str_replace(Bad., "%", "")),
+    Passattempts = as.numeric(Att)
+  ) %>%
+  # join colors and logos from nflfastR
+  left_join(nflfastR::teams_colors_logos, by = c("team" = "team_abbr"))
+
+# save to disk------------------------------------------------------------------
+# binary
+saveRDS(pfr, file = "pfr_bad_throws.rds")
+
+# ASCII
+write_csv(pfr, "pfr_bad_throws.csv")
+```
+
+### Create the plot
+```{r}
+library(tidyverse)
+chart_data <- readRDS("pfr_bad_throws.rds") %>% filter(Passattempts > 180)
+
+chart_data %>%
+  ggplot(aes(x = IAY.PA, y = Bad. / 100)) +
+  geom_hline(aes(yintercept = mean(Bad. / 100)), color = "red", linetype = "dotted") +
+  geom_vline(aes(xintercept = mean(IAY.PA)), color = "red", linetype = "dotted") +
+  geom_smooth(method = "lm", se = FALSE, color = "black", size = 0.3) +
+  geom_point(color = chart_data$team_color, aes(cex = Passattempts), alpha = 1 / 4) +
+  ggrepel::geom_text_repel(aes(label = Player), force = 1, point.padding = 0, segment.size = 0.1, size = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_size_area(max_size = 6) +
+  labs(
+    x = "Average Depth of Target in Yards",
+    y = "Bad Throw Percentage",
+    caption = "Bad Throw Percentage = Percentage of throws that weren't catchable with normal effort, excluding spikes and throwaways\nFigure: @mrcaseb | Data: @pfref",
+    title = "QB Passing Performance 2019",
+    subtitle = "We may see regression hitting Tannehill and Prescott in 2020"
+  ) +
+  ggthemes::theme_stata(scheme = "sj", base_size = 8) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.caption = element_text(hjust = 1),
+    axis.text.y = element_text(angle = 0, vjust = 0.5),
+    legend.title = element_text(size = 8, hjust = 0, vjust = 0.5, face = "bold"),
+    legend.position = "top",
+    aspect.ratio = 1 / 1.618
+  ) +
+  NULL
+```
+
+## Wins Above Expectation
+
+### Load nflfastR Play by Play and compute some helper columns
+```{r}
+library(tidyverse)
+
+# Parameter --------------------------------------------------------------------
+
+season <- 2019
+wp_limit <- 0.5
+
+# Load the data ----------------------------------------------------------------
+
+pbp <- readRDS(url(
+  glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_{season}.rds")
+)) %>%
+  filter(pass == 1 | rush == 1)
+
+# Compute outcomes and win percentage ------------------------------------------
+
+outcomes <- pbp %>%
+  group_by(season, game_id, home_team) %>%
+  summarise(
+    home_win = if_else(result > 0, 1, 0),
+    home_tie = if_else(result == 0, 1, 0)
+  ) %>%
+  group_by(season, home_team) %>%
+  summarise(
+    home_games = n(),
+    home_wins = sum(home_win),
+    home_ties = sum(home_tie)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    # away games
+    pbp %>%
+      group_by(season, game_id, away_team) %>%
+      summarise(
+        away_win = if_else(result < 0, 1, 0),
+        away_tie = if_else(result == 0, 1, 0)
+      ) %>%
+      group_by(season, away_team) %>%
+      summarise(
+        away_games = n(),
+        away_wins = sum(away_win),
+        away_ties = sum(away_tie)
+      ) %>%
+      ungroup(),
+    by = c("season", "home_team" = "away_team")
+  ) %>%
+  rename(team = "home_team") %>%
+  mutate(
+    games = home_games + away_games,
+    wins = home_wins + away_wins,
+    losses = games - wins,
+    ties = home_ties + away_ties,
+    win_percentage = (wins + 0.5 * ties) / games
+  ) %>%
+  select(
+    season, team, games, wins, losses, ties, win_percentage
+  )
+
+# Compute percentage of plays with wp > wp_lim ---------------------------------
+
+wp_combined <- pbp %>%
+  filter(!is.na(vegas_wp) & !is.na(posteam)) %>%
+  group_by(season, posteam) %>%
+  summarise(
+    pos_plays = n(),
+    pos_wp_lim_plays = sum(vegas_wp > wp_limit)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    pbp %>%
+      filter(!is.na(vegas_wp) & !is.na(posteam)) %>%
+      group_by(season, defteam) %>%
+      summarise(
+        def_plays = n(),
+        def_wp_lim_plays = sum(vegas_wp < wp_limit)
+      ) %>%
+      ungroup(),
+    by = c("season", "posteam" = "defteam")
+  ) %>%
+  rename(team = "posteam") %>%
+  mutate(
+    wp_lim_percentage = as.numeric(pos_wp_lim_plays + def_wp_lim_plays) / as.numeric(pos_plays + def_plays)
+  ) %>%
+  select(season, team, wp_lim_percentage)
+
+# Combine data and add colors and logos ----------------------------------------
+
+chart <- outcomes %>%
+  left_join(wp_combined, by = c("season", "team")) %>%
+  filter(!is.na(wp_lim_percentage)) %>%
+  mutate(diff = 100 * (win_percentage - wp_lim_percentage)) %>%
+  group_by(team) %>%
+  summarise_all(mean) %>%
+  ungroup() %>%
+  inner_join(
+    nflfastR::teams_colors_logos %>% select(team_abbr, team_color, team_logo_espn, team_logo_wikipedia),
+    by = c("team" = "team_abbr")
+  ) %>%
+  mutate(
+    grob = map(seq_along(team_logo_espn), function(x) {
+      grid::rasterGrob(magick::image_read(team_logo_espn[[x]]))
+    })
+  ) %>%
+  select(team, win_percentage, wp_lim_percentage, diff, team_color, grob) %>%
+  arrange(desc(diff))
+```
+
+### Create the plots
+```{r}
+# Create scatterplot -----------------------------------------------------------
+chart %>%
+  ggplot(aes(x = wp_lim_percentage, y = win_percentage)) +
+  geom_abline(intercept = 0, slope = 1) +
+  geom_hline(aes(yintercept = mean(win_percentage)), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = mean(wp_lim_percentage)), color = "red", linetype = "dashed") +
+  ggpmisc::geom_grob(aes(x = wp_lim_percentage, y = win_percentage, label = grob), vp.width = 0.05) +
+  labs(
+    x = glue::glue("Percentage of snaps with win probability (vegas_wp) over {100 * wp_limit}%"),
+    y = "True win percentage (including ties as half a win)",
+    title = "NFL Team Efficiency",
+    caption = "Figure: @mrcaseb | Data: @nflfastR"
+  ) +
+  ggthemes::theme_stata(scheme = "sj", base_size = 8) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.caption = element_text(hjust = 1),
+    axis.text.y = element_text(angle = 0, vjust = 0.5),
+    legend.title = element_text(size = 8, hjust = 0, vjust = 0.5, face = "bold"),
+    legend.position = "top",
+    aspect.ratio = 1 / 1.618
+  ) +
+  NULL
+```
+
+### Barplot
+```{r}
+# Create bar plot  -------------------------------------------------------------
+chart %>%
+  ggplot(aes(x = seq_along(diff), y = diff)) +
+  geom_hline(aes(yintercept = mean(diff)), color = "red", linetype = "dashed") +
+  geom_col(width = 0.5, colour = chart$team_color, fill = chart$team_color, alpha = 0.5) +
+  ggpmisc::geom_grob(aes(x = seq_along(diff), y = diff, label = grob), vp.width = 0.035) +
+  # scale_x_continuous(expand = c(0,0)) +
+  labs(
+    x = "Rank",
+    y = "Win Percentage Over Expectation",
+    title = "NFL Team Efficiency",
+    subtitle = "How Lucky are the Teams?",
+    caption = "Figure: @mrcaseb | Data: @nflfastR"
+  ) +
+  ggthemes::theme_stata(scheme = "sj", base_size = 8) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.caption = element_text(hjust = 1),
+    axis.text.y = element_text(angle = 0, vjust = 0.5),
+    legend.title = element_text(size = 8, hjust = 0, vjust = 0.5, face = "bold"),
+    legend.position = "top",
+    aspect.ratio = 1 / 1.618
+  ) +
+  NULL
+```
+
+## Expected Turnovers for Quarterbacks
+
+### Load Packages, Get the Data
+
+```{r}
+library(nflfastR)
+library(tidyverse)
+library(caret)
+library(ggimage)
+library(gt)
+
+seasons <- 2006:2019
+pbp <- purrr::map_df(seasons, function(x) {
+  readRDS(
+    url(
+      glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_{x}.rds")
+    )
+  )
+})
+
+#Download all NFL roster data from 1999-2019.
+roster <- readRDS(url("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/roster-data/roster.rds"))
+```
+
+### Expected Interceptions
+```{r}
+incompletions <- pbp %>%
+  filter(season_type == "REG" & season >= 2006 & (incomplete_pass == 1 | interception == 1)) %>%
+  select(
+    incomplete_pass, air_yards, pass_defense_1_player_id, pass_defense_2_player_id,
+    season, posteam, interception, qb_hit, week, defteam, passer, posteam, pass_location, desc
+  ) %>%
+  mutate(
+    pbu = case_when(
+      !is.na(pass_defense_1_player_id) & !is.na(pass_defense_2_player_id) &
+        (incomplete_pass == 1 | interception == 1) ~ 2,
+      !is.na(pass_defense_1_player_id) & is.na(pass_defense_2_player_id) &
+        (incomplete_pass == 1 | interception == 1) ~ 1,
+      TRUE ~ 0
+    ),
+  )
+incompletions$air_yards[is.na(incompletions$air_yards)] <- 0
+incompletions$pass_location[is.na(incompletions$pass_location)] <- "None"
+
+#Split into training and testing dataframes. I used 2006-2016 to train the model and 2017-2019 to test. The split comes out to approximately 79% training, 21% testing.
+
+int_train <- incompletions %>%
+  filter(season < 2017) %>%
+  select(-c(
+    pass_defense_1_player_id, pass_defense_2_player_id, incomplete_pass, posteam, week, defteam,
+    passer, posteam, desc
+  )) %>%
+  mutate(
+    interception = if_else(interception == 1, "int", "no.int"),
+  )
+
+int_test <- incompletions %>%
+  filter(season >= 2017)
+
+#Train the model using logistic regression, then add expected interceptions to the int_test dataframe.
+
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 10,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+set.seed(69) # nice
+int_model <- train(interception ~ .,
+  data = int_train,
+  method = "glm", preProcess = c("scale", "center"),
+  metric = "ROC", trControl = fitControl
+)
+int_model
+```
+
+```{r}
+int_test$exp_int <- predict(int_model, int_test, type = "prob")
+
+int_test %>%
+  arrange(-exp_int) %>%
+  select(desc, exp_int, passer, posteam, defteam, season, week) %>%
+  head(5)
+```
+
+### Expected Fumbles
+```{r}
+fumbles <- pbp %>%
+  filter(season_type == "REG", season >= 2006, fumble == 1) %>%
+  select(
+    fumble_forced, fumble_not_forced, fumble_out_of_bounds, fumble_lost, fumble, yards_gained, sack,
+    aborted_play, season, posteam, week, defteam, fumbled_1_player_name, desc
+  )
+
+#Splitting the same way as the incompletions, this time for an 80-20 train-test split.
+
+fumble_train <- fumbles %>%
+  filter(season < 2017) %>%
+  select(-c(season, posteam, week, fumble, defteam, fumbled_1_player_name, desc)) %>%
+  mutate(
+    fumble_lost = if_else(fumble_lost == 1, "lost", "recovered")
+  )
+fumble_test <- fumbles %>%
+  filter(season >= 2017)
+
+#Train the model using logistic regression (we can reuse the trControl from above) and then add expected fumbles to the fumble_test dataframe.
+
+set.seed(69) # nice
+fumble_model <- train(fumble_lost ~ .,
+  data = fumble_train,
+  method = "glm", preProcess = c("scale", "center"),
+  trControl = fitControl, metric = "ROC"
+)
+fumble_model
+```
+
+```{r}
+fumble_test$exp_fl <- predict(fumble_model, fumble_test, type = "prob")
+
+#Let’s take a look at the fumbles most likely to have been lost from 2017-2019:
+
+fumble_test %>%
+  arrange(-exp_fl) %>%
+  select(desc, exp_fl, fumbled_1_player_name, posteam, defteam, season, week) %>%
+  head(5)
+```
+
+### Predictive Power?
+```{r}
+roster$name <- paste0(substr(roster$teamPlayers.firstName, 1, 1), ".", roster$teamPlayers.lastName)
+
+xInt <- int_test %>%
+  filter(!is.na(passer)) %>%
+  left_join(roster[, c(
+    "team.season", "name", "teamPlayers.position", "team.abbr",
+    "teamPlayers.headshot_url"
+  )],
+  by = c("passer" = "name", "season" = "team.season", "posteam" = "team.abbr")
+  ) %>%
+  rename(
+    position = teamPlayers.position,
+    player = passer,
+  ) %>%
+  filter(position == "QB") %>%
+  group_by(player, posteam, season, teamPlayers.headshot_url) %>%
+  summarise(Interceptions = sum(interception), xInt = sum(exp_int$int)) %>%
+  mutate(diff = Interceptions - xInt)
+
+xFmb <- fumble_test %>%
+  filter(!is.na(fumbled_1_player_name)) %>%
+  left_join(roster[, c(
+    "team.season", "name", "teamPlayers.position", "team.abbr",
+    "teamPlayers.headshot_url"
+  )],
+  by = c("fumbled_1_player_name" = "name", "season" = "team.season", "posteam" = "team.abbr")
+  ) %>%
+  rename(
+    position = teamPlayers.position,
+    player = fumbled_1_player_name,
+  ) %>%
+  filter(position == "QB") %>%
+  group_by(player, posteam, season, teamPlayers.headshot_url) %>%
+  summarise(Fumbles_Lost = sum(fumble_lost), xFmb = sum(exp_fl$lost)) %>%
+  mutate(diff = Fumbles_Lost - xFmb)
+```
+
+```{r}
+dropbacks <- pbp %>%
+  filter(season_type == "REG" & season > 2016 & !is.na(passer)) %>%
+  group_by(passer, season) %>%
+  summarise(dropbacks = n(), epa = mean(epa, na.rm = TRUE), sr = mean(success, na.rm = TRUE))
+
+xTO <- dropbacks %>%
+  inner_join(xInt, by = c("passer" = "player", "season")) %>%
+  left_join(xFmb, by = c("passer" = "player", "posteam", "season", "teamPlayers.headshot_url"))
+
+xTO$Fumbles_Lost[is.na(xTO$Fumbles_Lost)] <- 0
+xTO$xFmb[is.na(xTO$xFmb)] <- 0
+xTO$diff.y[is.na(xTO$diff.y)] <- 0
+
+xTO <- xTO %>%
+  mutate(
+    Turnovers = Interceptions + Fumbles_Lost,
+    xTO = xInt + xFmb,
+    diff = diff.x + diff.y,
+    to_pct = Turnovers / dropbacks,
+    int_pct = Interceptions / dropbacks,
+    xto_pct = xTO / dropbacks,
+    xint_pct = xInt / dropbacks,
+    to_pct_diff = xto_pct - to_pct,
+    int_pct_diff = xint_pct - int_pct,
+  ) %>%
+  filter(dropbacks >= 250) %>%
+  group_by(passer) %>%
+  mutate(
+    next_to = lead(Turnovers, 1),
+    next_int = lead(Interceptions, 1),
+    next_fmb = lead(Fumbles_Lost, 1),
+    next_db = lead(dropbacks, 1)
+  )
+```
+
+### Visuals
+```{r}
+ggplot(subset(xTO, season == 2019), aes(x = Turnovers / dropbacks, y = xTO / dropbacks)) +
+  geom_image(aes(image = teamPlayers.headshot_url), size = 0.05, asp = 16 / 9) +
+  labs(
+    title = "QB Turnovers 2019",
+    subtitle = "Regular Season | Min. 250 Dropbacks",
+    x = "Actual Turnovers per Dropback",
+    y = "Expected Turnovers per Dropback",
+    caption = "@AG_8 | Data: @nflfastR"
+  ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 9 / 16,
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 10, hjust = 0.5),
+  ) +
+  geom_abline(slope = 1, intercept = 0)
+```
+
+```{r}
+ggplot(subset(xTO, season == 2019), aes(x = Interceptions / dropbacks, y = xInt / dropbacks)) +
+  geom_image(aes(image = teamPlayers.headshot_url), size = 0.05, asp = 16 / 9) +
+  labs(
+    title = "QB Interceptions 2019",
+    subtitle = "Regular Season | Min. 250 Dropbacks",
+    x = "Actual Interceptions per Dropback",
+    y = "Expected Interceptions per Dropback",
+    caption = "@AG_8 | Data: @nflfastR"
+  ) +
+  theme_bw() +
+  theme(
+    aspect.ratio = 9 / 16,
+    plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 10, hjust = 0.5),
+  ) +
+  geom_abline(slope = 1, intercept = 0)
+```
+
+```{r}
+xTO %>%
+  ungroup() %>%
+  filter(season == 2019) %>%
+  select(c(passer, posteam, dropbacks, to_pct, xto_pct, to_pct_diff, int_pct, xint_pct, int_pct_diff)) %>%
+  mutate(
+    to_pct_diff = to_pct_diff * 100,
+    int_pct_diff = int_pct_diff * 100
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Expected QB Turnovers",
+    subtitle = "Regular Season 2019 | Min. 250 Dropbacks"
+  ) %>%
+  cols_label(
+    passer = "QB",
+    posteam = "Team",
+    dropbacks = "Dropbacks",
+    to_pct = "TOs per Dropback",
+    xto_pct = "xTOs per Dropback",
+    to_pct_diff = "xTOs/DB - TOs/DB",
+    int_pct = "Ints per Dropback",
+    xint_pct = "xInts per Dropback",
+    int_pct_diff = "xInts/DB - Ints/DB"
+  ) %>%
+  fmt_number(
+    columns = c("to_pct", "xto_pct", "to_pct_diff", "int_pct", "xint_pct", "int_pct_diff"),
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    columns = c("to_pct", "xto_pct", "int_pct", "xint_pct")
+  ) %>%
+  tab_source_note("@AG_8 | Data: @nflfastR") %>%
+  data_color(
+    columns = c("to_pct", "xto_pct", "to_pct_diff", "int_pct", "xint_pct", "int_pct_diff"),
+    colors = scales::col_numeric(palette = "Reds", domain = NULL)
+  ) %>%
+  cols_align(align = "center") %>%
+  cols_width(
+    everything() ~ px(90)
+  )
+```
+
+
+## Adjusting EPA for Strength of Opponent
+
+```{r}
+NFL_PBP <- purrr::map_df(2009:2019, function(x) {
+  readr::read_csv(
+    glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_{x}.csv.gz")
+  )
+})
+
+#With the data loaded, we can finally get down to business by summarizing each team’s weekly epa/play.
+
+epa_data <- NFL_PBP %>%
+  dplyr::filter(!is.na(epa), !is.na(ep), !is.na(posteam), play_type == "pass" | play_type == "run") %>%
+  dplyr::group_by(game_id, season, week, posteam, home_team) %>%
+  dplyr::summarise(
+    off_epa = mean(epa),
+  ) %>%
+  dplyr::left_join(NFL_PBP %>%
+    filter(!is.na(epa), !is.na(ep), !is.na(posteam), play_type == "pass" | play_type == "run") %>%
+    dplyr::group_by(game_id, season, week, defteam, away_team) %>%
+    dplyr::summarise(def_epa = mean(epa)),
+  by = c("game_id", "posteam" = "defteam", "season", "week"),
+  all.x = TRUE
+  ) %>%
+  dplyr::mutate(opponent = ifelse(posteam == home_team, away_team, home_team)) %>%
+  dplyr::select(game_id, season, week, home_team, away_team, posteam, opponent, off_epa, def_epa)
+```
+
+```{r}
+# Construct opponent dataset and lag the moving average of their last ten games.
+opponent_data <- epa_data %>%
+  dplyr::select(-opponent) %>%
+  dplyr::rename(
+    opp_off_epa = off_epa,
+    opp_def_epa = def_epa
+  ) %>%
+  dplyr::group_by(posteam) %>%
+  dplyr::arrange(season, week) %>%
+  dplyr::mutate(
+    opp_def_epa = pracma::movavg(opp_def_epa, n = 10, type = "s"),
+    opp_def_epa = dplyr::lag(opp_def_epa),
+    opp_off_epa = pracma::movavg(opp_off_epa, n = 10, type = "s"),
+    opp_off_epa = dplyr::lag(opp_off_epa)
+  )
+
+# Merge opponent data back in with the weekly epa data
+epa_data <- epa_data %>%
+  left_join(
+    opponent_data,
+    by = c("game_id", "season", "week", "home_team", "away_team", "opponent" = "posteam"),
+    all.x = TRUE
+  )
+```
+
+```{r}
+epa_data <- epa_data %>%
+  dplyr::left_join(epa_data %>%
+    dplyr::filter(posteam == home_team) %>%
+    dplyr::group_by(season, week) %>%
+    dplyr::summarise(
+      league_mean = mean(off_epa + def_epa)
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by(season) %>%
+    dplyr::mutate(
+      league_mean = lag(pracma::movavg(league_mean, n = 10, type = "s"), ) # We lag because we need to know the league mean up to that point in the season
+    ),
+  by = c("season", "week"),
+  all.x = TRUE
+  )
+
+# Adjust EPA
+epa_data <- epa_data %>%
+  dplyr::mutate(
+    off_adjustment_factor = ifelse(!is.na(league_mean), league_mean - opp_def_epa, 0),
+    def_adjustment_factor = ifelse(!is.na(league_mean), league_mean - opp_off_epa, 0),
+    adjusted_off_epa = off_epa + off_adjustment_factor,
+    adjusted_def_epa = def_epa + def_adjustment_factor,
+  )
+```
+
+```{r}
+# Offense
+epa_data %>%
+  dplyr::group_by(posteam, season) %>%
+  dplyr::summarise_all(mean, na.rm = TRUE) %>%
+  dplyr::select(posteam, season, off_epa, def_epa, adjusted_off_epa, adjusted_def_epa) %>%
+  dplyr::filter(season == 2019) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(off_epa) %>%
+  dplyr::mutate(posteam = factor(posteam, levels = posteam[order(off_epa)])) %>% 
+  ggplot2::ggplot(aes(x = off_epa, xend = adjusted_off_epa, y = posteam, group = posteam)) +
+  ggalt::geom_dumbbell(
+                      size_x=3.5, 
+                      size_xend = 3.5,
+                      colour_x="dark blue", 
+                      colour_xend = "light blue") +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(
+    title = "Offensive EPA/Play v. Adjusted Offensive EPA/Play",
+    y = "Team",
+    x = "Off EPA/Play (Dark Blue) v. Adj Off EPA/Play (Light Blue)"
+  ) +
+  ggplot2::theme(legend.position = "none", 
+            plot.title = element_text(face = "bold"), 
+            axis.title.x = element_text(face = "bold"),
+            axis.title.y = element_text(face = "bold"))
+```
+
+```{r}
+# Defense
+epa_data %>%
+  dplyr::group_by(posteam, season) %>%
+  dplyr::summarise_all(mean, na.rm = TRUE) %>%
+  dplyr::select(posteam, season, off_epa, def_epa, adjusted_off_epa, adjusted_def_epa) %>%
+  dplyr::filter(season == 2019) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(def_epa) %>%
+  dplyr::mutate(posteam = factor(posteam, levels = posteam[order(-def_epa)])) %>% 
+  ggplot2::ggplot(aes(x = def_epa, xend = adjusted_def_epa, y = posteam, group = posteam)) +
+  ggalt::geom_dumbbell(
+                      size_x=3.5, 
+                      size_xend = 3.5,
+                      colour_x="dark blue", 
+                      colour_xend = "light blue") +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(
+    title = "Defensive EPA/Play v. Adjusted Defensive EPA/Play",
+    y = "Team",
+    x = "Def EPA/Play (Dark Blue) v. Adj Def EPA/Play (Light Blue)"
+  ) +
+  ggplot2::theme(legend.position = "none", 
+            plot.title = element_text(face = "bold"), 
+            axis.title.x = element_text(face = "bold"),
+            axis.title.y = element_text(face = "bold"))
+
+```
+
+### Model
+```{r}
+predictions_adjusted <- goldbeRg::generate_nfl_predictions(2018:2019)
+### Remake function for model without adjusted epa
+generate_epa_predictions <- function(years, seed = 123){
+  ### Grab Model Dataset
+  message(paste("Getting Dataset"))
+  dataset <- goldbeRg::create_nfl_modeldataset()
+  ### Create Predictions
+  message(paste("Mapping Years"))
+  results <- purrr::map_df(years, function(years){
+  # Create Model
+  set.seed(seed)
+  model <- caret::train(win ~
+                            point_differential + off_epa + def_epa +
+                            opp_point_differential + opp_off_epa + opp_def_epa +
+                              location,
+                          data = dataset %>% mutate(win = as.factor(win)) %>% filter(season < years),
+                          method = 'glm',
+                          family = "binomial",
+                          preProc = c("scale"),
+                          trControl = caret::trainControl(method = "repeatedcv", number = 10, repeats = 3))
+    # Generate Predictions
+    predictions <- dataset %>%
+      dplyr::filter(season == years) %>%
+      dplyr::mutate(model_home_wp = caret::predict.train(newdata = dataset %>% dplyr::mutate(win = as.factor(win)) %>% dplyr::filter(season == years), object = model, type = "prob")[,2]) %>%
+      dplyr::select(game_id, game_completed, win, home_team, away_team, model_home_wp)
+    return(predictions)
+  })
+  return(results)
+}
+predictions_epa <- generate_epa_predictions(2018:2019)
+```
+
+Here, each metrics are used in separate glm models to predict the outcome of games from the past two seasons. Their accuracy is below.
+
+```{r}
+# Adjusted EPA accuracy:
+print("Adjusted EPA Accuracy")
+predictions_adjusted %>% 
+  dplyr::mutate(correct = ifelse(win == 1 & model_home_wp > .5 | win == 0 & model_home_wp < .5, 1, 0)) %>%
+  dplyr::pull(correct) %>%
+  mean()
+ 
+```
+
+```{r}
+# Normal EPA Accuracy
+print("Normal EPA Accuracy")
+predictions_epa %>% 
+  dplyr::mutate(correct = ifelse(win == 1 & model_home_wp > .5 | win == 0 & model_home_wp < .5, 1, 0)) %>%
+  dplyr::pull(correct) %>%
+  mean()
+```
+
+## Visualizing the Run/Pass Efficiency Gap
+
+```{r}
+prem_epa_df <- pbp_df %>%
+  filter(down <= 2 & wp <= .8 & wp >= .2 & half_seconds_remaining >= 120) %>%
+  group_by(posteam) %>%
+  summarize(
+    pass_freq = mean(pass),
+    pass_epa = mean(ifelse(pass == 1, epa, NA), na.rm = T),
+    run_epa = mean(ifelse(rush == 1, epa, NA), na.rm = T),
+    pass_epa_prem = pass_epa - run_epa
+  )
+
+## Plot Extras
+
+label_df <- data.frame(
+  pass_freq = c(.675, .425, .675, .425),
+  pass_epa_prem = c(.42, .42, -.02, -.02),
+  label = c(
+    "Better at Passing\nPass A Lot",
+    "Better at Passing\nRun A Lot",
+    "Better at Running\nPass A Lot",
+    "Better at Running\nRun A Lot"
+  )
+)
+
+pbp_df %>%
+  filter(down <= 2 & wp <= .8 & wp >= .2 & half_seconds_remaining >= 120) %>%
+  group_by(season) %>%
+  summarize(
+    pass_freq = mean(pass),
+    pass_epa = mean(ifelse(pass == 1, epa, NA), na.rm = T),
+    run_epa = mean(ifelse(rush == 1, epa, NA), na.rm = T),
+    pass_epa_prem = pass_epa - run_epa
+  )
+```
+
+We can use this function to turn team abbreviations into the URL needed get high quality logos from ESPN.
+```{r}
+ESPN_logo_url <- function(x) paste0("https://a.espncdn.com/i/teamlogos/nfl/500/", x, ".png")
+```
+
+### Basic Plot
+```{r}
+library(ggimage) # I'm going to use ggimage's geom_image to add team logos here
+library(scales) # percent_format will convert the y-axis to percentages
+
+ggplot(data = prem_epa_df, aes(x = pass_epa_prem, y = pass_freq)) +
+  geom_hline(yintercept = 0.525, color = "red", linetype = "52", size = 0.2) +
+  geom_vline(xintercept = 0.198, color = "red", linetype = "52", size = 0.2) +
+  geom_text(data = label_df, aes(label = label), color = "red", size = 1.5) +
+  geom_image(aes(image = ESPN_logo_url(posteam)), size = 0.04) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Dropback Premium vs Dropback Frequency",
+    subtitle = "Early Downs with Win Probability Between 20% and 80% Outside of\nLast Two Minutes of The Half",
+    y = "Dropback Freq",
+    x = "(EPA/Play on Dropbacks) - (EPA/Play on Designed Runs)"
+  ) +
+  theme_minimal()
+```
+
+### Fancier Plot
+```{r}
+library(scales) # fixes labels
+library(shadowtext) # geom_shadowtext adds a thin border around your text, making it more readable
+library(ggpmisc) # geom_grob is my preferred function for placing images on plots
+library(grid) # convert an image to a raster object
+library(magick) # read our image in so we can make manipulations, if needed
+
+#I like to use +/- signs for positive & negative sometimes. This function usually gets the job done and can be applied directly to label argument of the axis layer.
+
+
+plus_lab <- function(x, accuracy = NULL, suffix = "") paste0(ifelse(x > 0, "+", ""), number(x, accuracy = accuracy, suffix = suffix, scale = ifelse(suffix == "%", 100, 1)))
+plus_lab_format <- function(accuracy = NULL, suffix = "") function(x) plus_lab(x, accuracy = accuracy, suffix = suffix)
+
+```
+
+```{r}
+grob_img_adj <- function(img_url, alpha = 1, whitewash = 0) {
+  return(lapply(img_url, function(x) {
+    if (is.na(x)) {
+      return(NULL)
+    } else {
+      img <- magick::image_read(x)[[1]]
+      img[1, , ] <- as.raw(255 - (255 - as.integer(img[1, , ])) * (1 - whitewash))
+      img[2, , ] <- as.raw(255 - (255 - as.integer(img[2, , ])) * (1 - whitewash))
+      img[3, , ] <- as.raw(255 - (255 - as.integer(img[3, , ])) * (1 - whitewash))
+      img[4, , ] <- as.raw(as.integer(img[4, , ]) * alpha)
+      return(grid::rasterGrob(image = magick::image_read(img)))
+    }
+  }))
+}
+
+theme_SB <- theme(
+  line = element_line(lineend = "round", color = "darkblue"),
+  text = element_text(color = "darkblue"),
+  plot.background = element_rect(fill = "grey95", color = "transparent"),
+  panel.border = element_rect(color = "darkblue", fill = NA),
+  panel.background = element_rect(fill = "white", color = "transparent"),
+  axis.ticks = element_line(color = "darkblue", size = 0.5),
+  axis.ticks.length = unit(2.75, "pt"),
+  axis.title = element_text(size = 8),
+  axis.text = element_text(size = 7, color = "darkblue"),
+  plot.title = element_text(size = 14),
+  plot.subtitle = element_text(size = 8),
+  plot.caption = element_text(size = 5),
+  legend.background = element_rect(fill = "grey90", color = "darkblue"),
+  legend.key = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.grid.major = element_line(color = "grey85", size = 0.3),
+  axis.title.y = element_text(angle = 0, vjust = 0.5),
+  strip.background = element_blank(),
+  strip.text = element_text(size = 6, color = "darkblue"),
+  legend.position = "bottom"
+)
+```
+
+```{r}
+ggplot(data = prem_epa_df, aes(x = pass_epa_prem, y = pass_freq)) +
+  geom_hline(yintercept = 0.525, color = "red", linetype = "52", size = 0.2) +
+  geom_vline(xintercept = 0.198, color = "red", linetype = "52", size = 0.2) +
+  geom_shadowtext(data = label_df, aes(label = label), color = "red", size = 1.5, bg.color = "white", bg.r = 0.2) +
+  geom_grob(aes(x = pass_epa_prem, y = pass_freq, label = grob_img_adj(ESPN_logo_url(posteam), alpha = 0.7), vp.height = 0.06)) +
+  scale_x_continuous(labels = plus_lab_format(accuracy = .01), breaks = seq(-1, 1, .1), limits = c(-0.1, 0.5), expand = expansion(mult = c(0.02, 0.02))) +
+  scale_y_continuous(labels = percent_format(accuracy = 1), breaks = seq(0, 1, .05), limits = c(.4, .7), expand = expansion(mult = c(0.03, 0.03))) +
+  labs(
+    title = "Dropback Premium vs Dropback Frequency",
+    subtitle = "Early Downs with Win Probability Between 20% and 80% Outside of Last Two\nMinutes of The Half",
+    y = "Dropback\nFreq",
+    x = "(EPA/Play on Dropbacks) - (EPA/Play on Designed Runs)"
+  ) +
+  theme_SB
+```
+
+## Visualizing EPSN’s Total QBR Using Interactive Plots
+
+```{r}
+#remotes::install_github("jthomasmock/espnscrapeR")
+
+get_week_qbr <- function(s, wk) {
+  if (wk <= 17) {
+    out <- espnscrapeR::get_nfl_qbr(season = s, season_type = "Regular", week = wk)
+  } else if (wk > 17 & s != 2017) {
+    out <- espnscrapeR::get_nfl_qbr(season = s, season_type = "Playoffs", week = wk - 17)
+  }
+}
+
+# Total QBR data as available beginning in 2006
+# Note: Playoffs 2017 are missing
+seasons <- 2006:2019
+
+all_qbr <-
+  furrr::future_pmap_dfr(purrr::transpose(purrr::cross2(seasons, 1:21)), get_week_qbr) %>%
+  dplyr::mutate(
+    game_week = as.numeric(game_week),
+    game_week = dplyr::if_else(season_type == "Playoffs", game_week + 17, game_week)
+  ) %>%
+  dplyr::arrange(season, game_week)
+
+# save to disk------------------------------------------------------------------
+# binary
+saveRDS(all_qbr, file = "all_qbr.rds")
+
+# ASCII
+readr::write_csv(all_qbr, "all_qbr.csv")
+```
+
+### Create some static weekly QBR plots
+```{r}
+readRDS("all_qbr.rds") %>%
+  dplyr::filter(stringr::str_length(team) > 3) %>%
+  dplyr::group_by(season, short_name, team) %>%
+  dplyr::summarise() %>%
+  knitr::kable("simple", align = "c")
+```
+
+```{r}
+plot_weekly_qbr <- function(year, QB, all_qbr_file) {
+
+  # Filter the QB we want to look at, modify team names and week numbers
+  # to fit nflfastR convention and add the team color of the QB
+  single_qbr <- all_qbr_file %>%
+    dplyr::filter(season == year & name == QB) %>%
+    dplyr::mutate(
+      team = dplyr::case_when(
+        team == "LAR" ~ "LA",
+        team == "WSH" ~ "WAS",
+        TRUE ~ team
+      ),
+      game_week = dplyr::if_else(game_week > 21, 21, game_week)
+    ) %>%
+    dplyr::left_join(
+      nflfastR::teams_colors_logos %>% select(team_abbr, team_color),
+      by = c("team" = "team_abbr")
+    )
+
+  # Search for the QBs opponents using the schedule function of nflfastR
+  # and add logos of the opponents
+  opponents <- nflfastR::fast_scraper_schedules(year) %>%
+    dplyr::filter(home_team == single_qbr$team | away_team == single_qbr$team) %>%
+    dplyr::mutate(
+      opp = dplyr::if_else(home_team == single_qbr$team, away_team, home_team)
+    ) %>%
+    dplyr::left_join(
+      nflfastR::teams_colors_logos %>% select(team_abbr, team_logo_espn),
+      by = c("opp" = "team_abbr")
+    ) %>%
+    dplyr::mutate(
+      grob = purrr::map(seq_along(team_logo_espn), function(x) {
+        grid::rasterGrob(magick::image_read(team_logo_espn[[x]]))
+      })
+    )
+
+  # Combine the QBR data of the chosen QB with the game data
+  chart <- single_qbr %>%
+    dplyr::left_join(opponents, by = c("game_week" = "week"))
+
+  # Set title string for later usage
+  if (max(chart$game_week) > 17) {
+    title_string <- glue::glue("{QB} Weekly Total QBR {year} including Playoffs")
+  } else {
+    title_string <- glue::glue("{QB} Weekly Total QBR {year} Regular Season")
+  }
+
+  # going to draw some quantile lines and combine them here
+  quantiles <- c(
+    quantile(all_qbr_file$qbr_total, 0.10),
+    quantile(all_qbr_file$qbr_total, 0.25),
+    quantile(all_qbr_file$qbr_total, 0.75),
+    quantile(all_qbr_file$qbr_total, 0.90),
+    quantile(all_qbr_file$qbr_total, 0.98)
+  )
+
+  chart %>%
+    ggplot(aes(x = game_week, y = qbr_total)) +
+    geom_hline(yintercept = quantiles, color = "black", linetype = "dashed", alpha = 0.7) +
+    geom_hline(yintercept = quantile(all_qbr_file$qbr_total, 0.50), color = "black", linetype = "solid", alpha = 0.7) +
+    geom_text(x = 0, y = 2 + quantile(all_qbr_file$qbr_total, 0.10), label = "10th Percentile", hjust = 1, size = 2) +
+    geom_text(x = 0, y = 2 + quantile(all_qbr_file$qbr_total, 0.25), label = "25th Percentile", hjust = 1, size = 2) +
+    geom_text(x = 0, y = 2 + quantile(all_qbr_file$qbr_total, 0.50), label = "50th Percentile", hjust = 1, size = 2) +
+    geom_text(x = 0, y = 2 + quantile(all_qbr_file$qbr_total, 0.75), label = "75th Percentile", hjust = 1, size = 2) +
+    geom_text(x = 0, y = 2 + quantile(all_qbr_file$qbr_total, 0.90), label = "90th Percentile", hjust = 1, size = 2) +
+    geom_text(x = 0, y = 2 + quantile(all_qbr_file$qbr_total, 0.98), label = "98th Percentile", hjust = 1, size = 2) +
+    geom_line(colour = chart$team_color) +
+    scale_x_continuous(
+      limits = c(-1.4, NA),
+      breaks = scales::breaks_pretty()
+    ) +
+    ggpmisc::geom_grob(aes(x = game_week, y = qbr_total, label = grob), vp.width = 0.05) +
+    labs(
+      x = "Game Week",
+      y = "ESPN Total QBR",
+      caption = "Figure: @mrcaseb | Data: espnscrapeR by @thomas_mock",
+      title = title_string,
+      subtitle = "Percentiles of the whole NFL 2006 - 2019 are drawn for orientation\nTo qualify, a player must play a minimum of 20 action plays per team game"
+    ) +
+    ggthemes::theme_stata(scheme = "sj", base_size = 8) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      plot.caption = element_text(hjust = 1),
+      axis.text.y = element_text(angle = 0, vjust = 0.5),
+      legend.title = element_text(size = 8, hjust = 0, vjust = 0.5, face = "bold"),
+      legend.position = "top",
+      aspect.ratio = 1 / 1.618
+    ) +
+    NULL
+}
+```
+
+```{r}
+all_qbr <- readRDS("all_qbr.rds")
+plot_weekly_qbr(2007, "Tom Brady", all_qbr)
+plot_weekly_qbr(2006, "Peyton Manning", all_qbr)
+```
+
+## Gunslingers and Game Managers
+
+```{r}
+seasons <- 2005:2020
+
+pbp <- purrr::map_df(seasons, function(x) {
+  readRDS(
+    url(
+      glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_{x}.rds")
+    )
+  )
+})
+
+pbp %>% filter(qb_dropback == 1, !is.na(epa)) -> passes
+
+passes <- passes %>% mutate(year = substr(game_id,1,4))
+```
+
+```{r}
+Stats <- passes %>% filter(home_wp > 0.1, home_wp < 0.9, qb_dropback==1) %>% 
+           mutate(QB = ifelse(is.na(passer_player_name), rusher_player_name, passer_player_name)) %>% 
+           group_by(QB, year) %>% 
+           summarize(numDropbacks = n(),
+                    passAttempts = sum(pass_attempt),
+                    #Game Manager Calculations:
+                    completions = sum(complete_pass),
+                    completionPercent = completions / passAttempts,
+                    ints = sum(interception),
+                    sacks = sum(sack)/numDropbacks,
+                    successRate = mean(success),
+                    
+                    #Gunslinger Calculations:
+                    meanAirYards = mean(air_yards, na.rm=TRUE),
+                    tds = sum(touchdown),
+                    shortOfSticksOnThird = sum(down==3 & air_yards < ydstogo & third_down_failed, na.rm=TRUE),
+                    thirdDownDropbacks = sum(down==3, na.rm=TRUE ),
+                    shortOfSticksOnThirdRate = shortOfSticksOnThird / thirdDownDropbacks,  
+                    passYards = sum(yards_gained[pass_attempt==1], na.rm=TRUE),
+                    rushYards = sum(yards_gained[pass_attempt==0], na.rm=TRUE),
+                    team = last(posteam),
+                    throwAways = sum(is.na(receiver_player_name) & pass_attempt==1),
+                    throwAwayRate = throwAways/numDropbacks,
+                    
+                    #EPA
+                    meanEPA = mean(epa),
+                    sdEPA = sd(epa)
+                    ) %>% 
+           filter(passAttempts > 200) %>%
+           arrange(desc(meanEPA)) %>% mutate(ID = paste(QB, "_", year))
+
+
+head(Stats)
+```
+
+```{r}
+Gunslinger <- Stats %>% select(QB, year, tds, passYards, meanAirYards, rushYards, shortOfSticksOnThirdRate, team)
+cols <- c('tds', 'passYards', 'rushYards', 'shortOfSticksOnThirdRate', 'meanAirYards')
+tdWeight <- 0.75
+passWeight <- 0.5
+rushWeight <- 0.25
+shortWeight <- 0.75
+airWeight <- 1
+Gunslinger[cols] <- scale(Gunslinger[cols])
+Gunslinger <- Gunslinger %>% mutate(GunslingScore = tdWeight* tds + passWeight* passYards + rushWeight* rushYards - shortWeight * shortOfSticksOnThirdRate + airWeight* meanAirYards) %>%  arrange(-GunslingScore)
+Gunslinger$GunslingScore <- scale(Gunslinger$GunslingScore)
+
+#And now for game managers:
+#Don’t throw interceptions - 100% High success rate (no negative plays) - 70% Don’t take sacks - 50% High completion rate - 75%
+
+Manager <- Stats %>% select(QB, year, ints, successRate, sacks, completionPercent, team, meanEPA, sdEPA)
+cols <- c('ints', 'successRate', 'sacks', 'completionPercent')
+Manager[cols] <- scale(Manager[cols])
+intWeight <- 1
+successWeight <- 0.70
+sacksWeight <- 0.50
+completeWeight <- 75
+Manager <- Manager %>% mutate(ManageScore = -1*ints*intWeight + successRate*successWeight - sacks*sacksWeight + completionPercent*completeWeight) %>%  arrange(-ManageScore) 
+Manager$ManageScore <- scale(Manager$ManageScore)
+```
+
+```{r}
+Combined <- Gunslinger %>% left_join(Manager) %>%  left_join(teams_colors_logos, by = c('team' = 'team_abbr')) %>% arrange(-GunslingScore)
+
+Combined %>% filter(year == 2019) %>%  ggplot(aes(x=ManageScore, y=GunslingScore, label=QB)) +
+  geom_image(aes(image = team_logo_espn)) +
+  geom_text_repel(aes(label=QB)) + 
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed", alpha=0.5) +
+  geom_vline(xintercept =  0, color = "red", linetype = "dashed", alpha=0.5) + 
+  labs(x = "Game Managing Performance", y="Gunslinging Performance")
+```
+
+## Adding ESPN and 538 Game Predictions to nflfastR Data
+```{r}
+NFL_Games <- nflfastR::fast_scraper_schedules(2018:2019) %>%
+  dplyr::mutate(
+    gameday = lubridate::as_date(gameday)
+  )
+```
+
+### 538
+```{r}
+FiveThirtyEight_Predictions <- read_csv("https://projects.fivethirtyeight.com/nfl-api/nfl_elo.csv")
+
+FiveThirtyEight_Predictions <- FiveThirtyEight_Predictions %>%
+  dplyr::mutate(
+    team1 = gsub("WSH", "WAS", team1),
+    team2 = gsub("WSH", "WAS", team2),
+    team1 = gsub("LAR", "LA", team1),
+    team2 = gsub("LAR", "LA", team2)
+  ) %>%
+  dplyr::select(date, season, team1, team2, elo_prob1) %>%
+  dplyr::rename(fivethirtyeight_home_wp = elo_prob1)
+
+#Now we can merge!
+
+NFL_Games <- NFL_Games %>%
+  left_join(
+    FiveThirtyEight_Predictions,
+    by = c("home_team" = "team1", "away_team" = "team2", "gameday" = "date", "season")
+  )
+```
+
+### ESPN
+```{r}
+get_game_ids <- function(season, season_type = c("preseason", "regular", "postseason")) {
+  current_year <- as.double(substr(Sys.Date(), 1, 4))
+  espn_game_ids <- data.frame()
+
+  if (!season_type %in% c("preseason", "regular", "postseason", "all")) {
+    stop("Please choose season_type of 'regular',  'playoffs', 'postseason', or 'all'")
+  }
+
+  if (!dplyr::between(as.numeric(season), 2002, current_year)) {
+    stop(paste("Please choose season between 2002 and", current_year))
+  }
+
+  if (lubridate::month(Sys.Date()) < 12 & lubridate::month(Sys.Date()) > 2 & season_type == "postseason" & current_year == season | season_type == "postseason" & lubridate::month(Sys.Date()) <= 2 & current_year == season) {
+    stop(paste("Unfortunately, the NFL Playoff Games have not been determined yet"))
+  }
+
+  message(
+    dplyr::if_else(
+      season_type == "regular",
+      glue::glue("Scraping from {season} {season_type} season!"),
+      glue::glue("Scraping from {season} {season_type}!")
+    )
+  )
+
+  season_type <- ifelse(season_type == "preseason", "1", season_type)
+  season_type <- ifelse(season_type == "regular", "2", season_type)
+  season_type <- ifelse(season_type == "postseason", "3", season_type)
+
+  weeks <- ifelse(season_type == "2", 17, 5)
+
+  espn_game_ids <- purrr::map_df(1:weeks, function(week) {
+    url <- glue::glue("https://www.espn.com/nfl/schedule/_/week/{week}/year/{season}/seasontype/{season_type}")
+
+    webpage <- xml2::read_html(url)
+
+    links <- webpage %>%
+      rvest::html_nodes("a") %>%
+      rvest::html_attr("href")
+
+    espn_gameid <- links %>%
+      as.tibble() %>%
+      dplyr::filter(str_detect(value, "gameId") == TRUE) %>%
+      dplyr::pull(value) %>%
+      stringr::str_remove(., "/nfl/game/_/gameId/")
+
+    bye_teams <- webpage %>%
+      rvest::html_nodes(".odd.byeweek") %>%
+      rvest::html_nodes("abbr") %>%
+      rvest::html_text()
+
+    home_team <- webpage %>%
+      rvest::html_nodes(".home-wrapper") %>%
+      rvest::html_nodes("abbr") %>%
+      rvest::html_text()
+
+    away_team <- webpage %>%
+      rvest::html_nodes("abbr") %>%
+      rvest::html_text()
+    away_team <- away_team[!away_team %in% home_team]
+    away_team <- away_team[!away_team %in% bye_teams]
+
+    placeholder <- data.frame(
+      home_team,
+      away_team,
+      espn_gameid
+    ) %>%
+      dplyr::mutate(
+        season_type = season_type,
+        season = season,
+        week = ifelse(season_type == 3, 17 + week, week)
+      )
+
+    espn_game_ids <- dplyr::bind_rows(espn_game_ids, placeholder)
+    return(espn_game_ids)
+  })
+
+  ### Fix Several Names for Compatibility with nflfastR Data game_ids
+  espn_game_ids <- espn_game_ids %>%
+    dplyr::mutate(
+      home_team = gsub("WSH", "WAS", home_team),
+      away_team = gsub("WSH", "WAS", away_team),
+      home_team = gsub("LAR", "LA", home_team),
+      away_team = gsub("LAR", "LA", away_team)
+    ) %>%
+    # Add nflfastR game_ids
+    dplyr::mutate(
+      week = ifelse(week == 22, week - 1, week),
+      alt_gameid = paste0(season, "_", ifelse(week >= 10, paste0(week), paste0(0, week)), "_", away_team, "_", home_team)
+    )
+
+  return(espn_game_ids)
+}
+
+# Get Game IDs
+ESPN_Games <- purrr::map_df(2018:2019, function(x) {
+  get_game_ids(x, season_type = "regular")
+})
+
+head(ESPN_Games)
+```
+
+```{r}
+# Pull Pregame Predictions
+ESPN_Game_Predictions <- purrr::map_df(ESPN_Games$espn_gameid, function(espn_game_id) {
+  pregame_predictions <- data.frame(espn_gameid = espn_game_id)
+
+  # Pull the JSon
+  game_json <- httr::GET(url = glue::glue("http://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={espn_game_id}")) %>%
+    httr::content(as = "text", encoding = "UTF-8") %>%
+    jsonlite::fromJSON(flatten = TRUE)
+
+
+  # Pull the game data from the ID dataframe
+  if ("gameProjection" %in% names(game_json[["predictor"]][["homeTeam"]]) == TRUE) {
+    pregame_predictions <- pregame_predictions %>%
+      dplyr::mutate(
+        espn_home_wp = as.numeric(game_json[["predictor"]][["homeTeam"]][["gameProjection"]]) / 100
+      )
+    message(
+      paste("Pulling predictions for", pregame_predictions$alt_gameid)
+    )
+  }
+
+
+  # Grab and convert the Moneylines from Oddsmakers
+  if ("pickcenter" %in% names(game_json) == TRUE &
+    "provider.name" %in% names(game_json[["pickcenter"]]) == TRUE &
+    "homeTeamOdds.moneyLine" %in% names(game_json[["pickcenter"]]) == TRUE
+  ) {
+    vegas_odds <- data.frame(
+      providers = game_json[["pickcenter"]][["provider.name"]],
+      odds = ifelse(game_json[["pickcenter"]][["homeTeamOdds.moneyLine"]] > 0, 100 / (game_json[["pickcenter"]][["homeTeamOdds.moneyLine"]] + 100), game_json[["pickcenter"]][["homeTeamOdds.moneyLine"]] / (game_json[["pickcenter"]][["homeTeamOdds.moneyLine"]] - 100))
+    ) %>%
+      tidyr::pivot_wider(names_from = providers, values_from = odds)
+
+    pregame_predictions <- cbind(
+      pregame_predictions, vegas_odds
+    )
+  }
+
+  return(pregame_predictions)
+})
+
+# Merge ESPN Data together
+ESPN_Games <- ESPN_Games %>%
+  left_join(
+    ESPN_Game_Predictions,
+    by = c("espn_gameid" = "espn_gameid")
+  )
+
+# Merge back to main data
+NFL_Games <- NFL_Games %>%
+  left_join(
+    ESPN_Games %>% select(alt_gameid, espn_home_wp, Caesars, numberfire, teamrankings, consensus),
+    by = c("game_id" = "alt_gameid")
+  )
+```
+
+```{r}
+### Do some data wrangling first
+NFL_Games <- NFL_Games %>%
+  mutate(
+    home_win = ifelse(home_score > away_score, 1, 0),
+    correct_espn = ifelse(ifelse(espn_home_wp > .5, 1, 0) == home_win, 1, 0),
+    correct_numberfire = ifelse(ifelse(numberfire > .5, 1, 0) == home_win, 1, 0),
+    correct_fivethirtyeight = ifelse(ifelse(fivethirtyeight_home_wp > .5, 1, 0) == home_win, 1, 0)
+  )
+Accuracy_Dataset <- NFL_Games %>%
+  # Filter out Playoff Games
+  filter(game_type == "REG") %>%
+  # Pivot Longer to allow group_by and summarize
+  pivot_longer(
+    cols = starts_with("correct_"),
+    names_to = "predictor",
+    names_prefix = "correct_",
+    values_to = "correct"
+  ) %>%
+  # Group and Summarize
+  group_by(predictor) %>%
+  summarise(
+    games = sum(!is.na(correct)),
+    games_correct = sum(correct, na.rm = TRUE),
+    percent_correct = round(mean(correct, na.rm = TRUE), 3)
+  )
+
+### Merge Over Brier Scores
+Accuracy_Dataset <- Accuracy_Dataset %>%
+  left_join(data.frame(
+    predictor = c("espn", "fivethirtyeight", "numberfire"),
+    brier_score = c(
+      DescTools::BrierScore(NFL_Games %>% filter(!is.na(espn_home_wp)) %>% pull(home_win), NFL_Games %>% filter(!is.na(espn_home_wp)) %>% pull(espn_home_wp)),
+      DescTools::BrierScore(NFL_Games$home_win, NFL_Games$fivethirtyeight_home_wp),
+      DescTools::BrierScore(NFL_Games %>% filter(!is.na(numberfire)) %>% pull(home_win), NFL_Games %>% filter(!is.na(espn_home_wp)) %>% pull(numberfire))
+    )
+  ),
+  by = "predictor"
+  ) %>%
+  mutate(brier_score = round(brier_score, 3))
+```
+
+## The accumulation of QB hits vs passing efficiency
+
+```{r}
+pbp <- map_df(2015 : 2019, ~{
+  readRDS(
+    url(
+      glue::glue("https://raw.githubusercontent.com/guga31bb/nflfastR-data/master/data/play_by_play_{.}.rds")
+    )
+  ) %>%
+    filter(pass == 1, !is.na(epa))
+})
+
+pbp %>% 
+  filter(qb_hit==1, play_type == "no_play") %>%
+  select(desc, qb_hit)
+```
+
+```{r}
+#Womp womp. Let’s see if we can just create hits by searching for the bracket [ since that’s what NFL uses to denote hits.
+
+
+pbp %>% 
+  filter(play_type != "no_play") %>%
+  mutate(
+    hit = if_else(stringr::str_detect(desc, "\\[") | sack == 1, 1, 0)
+  ) %>%
+  group_by(hit, qb_hit) %>%
+  summarize(n = n())
+```
+
+```{r}
+hits_data <- pbp %>% 
+  mutate(
+    hit = case_when(
+      play_type != "no_play" & qb_hit == 1 ~ 1,
+      play_type == "no_play" & (stringr::str_detect(desc, "\\[") | sack == 1) ~ 1,
+      TRUE ~ 0
+    )
+  )
+```
+
+### Calculate total hits and cumulative hits
+```{r}
+hits_data <- hits_data %>% 
+  group_by(posteam, game_id) %>%
+  mutate(
+    cum_hits=cumsum(qb_hit),
+    total_hits=sum(qb_hit)
+  ) %>%
+  ungroup()
+
+hits_data %>% 
+  group_by(total_hits) %>%
+  summarize(
+    mean_epa = mean(epa),
+    games=n_distinct(game_id, posteam)
+    )
+```
+
+```{r}
+hits_data <- hits_data %>%
+  mutate(
+    hit_in_game=
+      case_when(total_hits==0 | total_hits==1~"0-1",
+                 total_hits==2 | total_hits==3~"2-3", 
+                 total_hits==4 | total_hits==5~"4-5", 
+                 total_hits==6 | total_hits==7~"6-7", 
+                 total_hits==8|total_hits==9~"8-9", 
+                 total_hits>9~"10+") %>% 
+                  factor(levels = c("0", "2-3", "4-5", "6-7", "8-9", "10+"))
+    )
+```
+
+```{r}
+chart <- hits_data %>% 
+  group_by(hit_in_game,cum_hits) %>%
+  summarize(avg_epa = mean(epa), plays = n())
+```
+
+### Make the graph
+```{r}
+chart %>% 
+  filter(cum_hits > 0 & cum_hits <=12 & !is.na(hit_in_game)) %>%
+  ggplot(aes(x = cum_hits, y = avg_epa, color = hit_in_game, shape = hit_in_game)) +
+    geom_jitter(aes(x = cum_hits, y = avg_epa, fill = hit_in_game), shape = 21, stroke = 1.25, size = 4, width = 0.1, show.legend=FALSE)+
+   geom_smooth(method = lm, se = FALSE) +
+   theme_minimal() +
+   theme(
+    legend.position = c(0.99, 0.99), 
+    legend.justification = c(1, 1) ,
+    plot.title = element_text(size = 16, hjust = 0.5),
+    panel.grid.minor = element_blank())+ 
+  ggsci::scale_color_locuszoom(name = "Total Hits\nIn-Game") +
+  scale_y_continuous(name = "EPA Per Dropback", breaks = scales::pretty_breaks(n = 5))+
+  scale_x_continuous(breaks = 0:50, name = "Cumulative QB Hits Suffered In Game So Far")+
+  labs(title="QB hits versus QB efficiency", caption = "Data from nflfastR")
+```
+

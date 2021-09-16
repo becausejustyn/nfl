@@ -1,0 +1,50 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Mixture of 2 normals
+
+```{r}
+set.seed(198435)
+mus = c(-0.5,1.5)
+u = sample(2, 20, replace = TRUE)
+y = rnorm(length(u), mean = mus[u])
+duy = data.frame(u, y)
+group_by(duy, u)[1:6, ]
+```
+
+```{r}
+group_by(duy, u) %>% summarize(mean(y))
+```
+
+```{r}
+library(mixtools)
+
+n     = c( 100,  50)
+mu    = c(-0.2, 0.5)
+sigma = c( 0.5,   1)
+
+y = c(rnorm(n[1], mu[1], sd = sigma[1]), rnorm(n[2], mu[2], sigma[2]))
+gm = normalmixEM(y, k = 2, lambda = c(0.5, 0.5),
+                 mu = c(-0.02, 0.02), sigma = c(1, 1))
+
+
+mcl.model <- Mclust(fire1[, 7], 3)
+
+```
+
+```{r}
+mod4 <- densityMclust(fire1$date)
+summary(mod4)
+```
+
+```{r}
+#plot(mod4, what = "BIC")
+plot(mod4, what = "density", data = fire1$date, breaks = 15)
+```
+
+```{r}
+
+```
+

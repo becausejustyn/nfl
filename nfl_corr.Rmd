@@ -1,0 +1,73 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(nflfastR)
+
+library(corrr)
+```
+
+```{r}
+df <- nflfastR::load_pbp(2020) %>%
+  dplyr::filter(season_type == "REG") %>%
+  nflfastR::calculate_player_stats()
+
+df <- df %>%
+  mutate(across(where(is.numeric), ~if_else(is.na(.), 0, as.numeric(.))))
+
+df %>% 
+  select(where(is.numeric)) %>%
+  correlate(use = "pairwise.complete.obs")
+```
+
+```{r}
+df %>% 
+  select(where(is.numeric)) %>%
+  correlate(use = "pairwise.complete.obs") %>%
+  select(term, fantasy_points) %>%
+  arrange(-fantasy_points)
+```
+
+```{r}
+df1 <- nflfastR::load_pbp(2020) %>%
+  dplyr::filter(season_type == "REG")
+
+df1 <- df1 %>%
+  mutate(across(where(is.numeric), ~if_else(is.na(.), 0, as.numeric(.))))
+
+df1 %>% 
+  select(where(is.numeric)) %>%
+  correlate(use = "pairwise.complete.obs")
+```
+
+```{r}
+df1 %>% 
+  select(where(is.numeric)) %>%
+  correlate(use = "pairwise.complete.obs") %>%
+  select(term, epa) %>%
+  arrange(-epa)
+```
+
+
+
+
+```{r}
+nflfastR::load_pbp(2020) %>%
+  dplyr::filter(week <= 16) %>%
+  nflfastR::calculate_player_stats() %>%
+  dplyr::mutate(
+    ppg = fantasy_points / games
+  ) %>%
+  filter(games > 5) %>%
+  # only keep the WRs
+  inner_join(
+    nflfastR::fast_scraper_roster(2020) %>% filter(position == "WR") %>% select(gsis_id),
+    by = c("player_id" = "gsis_id")
+  ) %>%
+  dplyr::arrange(-ppg) %>%
+  dplyr::select(player_name, recent_team, games, fantasy_points, ppg)
+```
+

@@ -1,0 +1,104 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Fantasy
+
+```{r}
+library(ffanalytics)
+```
+
+
+```{r}
+my_scrape <- scrape_data(src = c("CBS", "ESPN", "Yahoo"), 
+                         pos = c("QB", "RB", "WR", "TE", "DST", "K"),
+                         season = 2018, week = 0)
+
+#src = c("CBS", "ESPN", "FantasyData", "FantasyPros", "FantasySharks", "FFToday",
+#    "FleaFlicker", "NumberFire", "Yahoo", "FantasyFootballNerd", "NFL", "RTSports",
+#    "Walterfootball")
+
+#pos = c("QB", "RB", "WR", "TE", "K", "DST")
+
+my_scrape <- scrape_data(src = c("CBS", "ESPN", "FantasyData", "FantasyPros", "FantasySharks", "FFToday", "FleaFlicker", 
+                                 "NumberFire", "FantasyFootballNerd", "NFL", "RTSports", "Walterfootball"), 
+                         pos = c("QB", "RB", "WR", "TE", "DST", "K"),
+                         season = 2020, week = 0)
+
+
+
+qb_scrape_cbs <- scrape_data(src = "CBS", pos = "QB", season = 2020, week = 0)
+
+qb_scrape <- scrape_data(src = c("CBS", "FantasyPros", "FantasySharks", "FFToday", 
+                                 "NumberFire", "RTSports", "Walterfootball"), 
+                         pos = c("QB", "RB", "WR", "TE", "DST", "K"),
+                         season = 2020, week = 0)
+```
+
+```{r}
+qb_scrape_tibb <- tibble(qb_scrape)
+
+qb_scrape_tibb$qb_scrape$QB %>%
+  count(data_src)
+```
+
+```{r}
+qb_scrape_tibb$qb_scrape$QB %>%
+  filter(data_src == "CBS") %>%
+  arrange(-site_pts)
+```
+
+```{r}
+my_projections <- projections_table(qb_scrape)
+
+my_projections1 <- projections_table(qb_scrape_tibb)
+
+```
+
+To add rankings information, risk value, and ADP/AAV data, use the add_ecr(), add_risk(), add_adp(), and add_aav() functions:
+```{r}
+my_projections <- my_projections %>% add_ecr() %>% add_risk() %>%
+  add_adp() %>% add_aav()
+```
+
+```{r}
+my_projections <- my_projections %>% add_player_info()
+```
+
+
+Fantasy Scoring
+
+
+
+
+
+
+```{r}
+library(nflfastR)
+options(scipen = 9999)
+data <- load_pbp(2020)
+```
+
+```{r}
+data %>% select(contains("fantasy")) 
+
+data %>%
+  filter(season_type == "REG" & games > 5) %>% 
+```
+
+```{r}
+data %>%
+  dplyr::filter(season_type == "REG", complete_pass == 1 | incomplete_pass == 1 | interception == 1, !is.na(down)) %>%
+  dplyr::group_by(passer_player_name, posteam) %>%
+  dplyr::summarize(
+    yards = sum(passing_yards, na.rm = T),
+    tds = sum(touchdown == 1 & td_team == posteam),
+    ints = sum(interception),
+    att = dplyr::n()
+  ) %>%
+  dplyr::arrange(-yards) 
+```
+
+
+

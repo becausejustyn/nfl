@@ -1,0 +1,60 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Fantasy Notes
+
+nflfastR generates the stats you want with `calculate_player_stats()`
+
+```{r}
+library(nflfastR)
+options(scipen = 9999)
+```
+
+```{r}
+rushing <- nflfastR::load_pbp(2020) %>%
+  dplyr::filter(season_type == "REG") %>%
+  nflfastR::calculate_player_stats() %>%
+  dplyr::arrange(-rushing_yards) %>%
+  dplyr::select(player_name, recent_team, carries, rushing_yards, rushing_tds, rushing_fumbles_lost) 
+
+rushing %>%
+  mutate(rushing_fantasy = )
+```
+
+```{r}
+fair <- nflfastR::load_pbp(2020) %>%
+  dplyr::filter(season_type == "REG") %>%
+  nflfastR::calculate_player_stats() 
+
+fair %>%
+  filter(receptions >= 20) %>%
+  arrange(-fantasy_points)
+```
+
+
+```{r}
+receptions = sum(complete_pass)
+
+#passing
+passing_yards = 0.04
+pass_touchdown = 4
+interception_thrown = -2
+
+#rushing
+rushing_yards = 0.1
+rush_touchdown = 6
+
+#rec
+reception = 1
+receiving_yards = 0.1
+touchdown = 6
+
+#special
+return_touchdown = 6
+fumble_rec_td = 6
+fumble = -2
+two_point_conv = 2
+```
+
