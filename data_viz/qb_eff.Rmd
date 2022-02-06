@@ -1,0 +1,176 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Quarterback Efficiency
+
+```{r}
+pbp <- purrr::map_df(c(2016:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+})
+
+qbs <- pbp %>%
+  filter(season_type == "REG", !is.na(epa)) %>%
+  group_by(id, name) %>%
+  summarise(
+    epa = mean(qb_epa),
+    cpoe = mean(cpoe, na.rm = TRUE),
+    n_dropbacks = sum(pass),
+    n_plays = n(),
+    team = last(posteam)
+  ) %>%
+  ungroup() %>%
+  filter(n_dropbacks > 100 & n_plays > 500) %>%
+  left_join(teams_colors_logos, by = c('team' = 'team_abbr'))
+```
+
+```{r}
+qbs %>%
+  ggplot(aes(x = cpoe, y = epa)) +
+  geom_hline(yintercept = mean(qbs$epa), color = "red", linetype = "dashed", alpha=0.5) +
+  geom_vline(xintercept =  mean(qbs$cpoe), color = "red", linetype = "dashed", alpha=0.5) +
+  geom_point(color = qbs$team_color, cex=qbs$n_plays / 350, alpha = .6) +
+  geom_text_repel(aes(label=name)) +
+  stat_smooth(geom='line', alpha=0.5, se=FALSE, method='lm')+
+  labs(x = "Completion % above expected (CPOE)",
+       y = "EPA per play (passes, rushes, and penalties)",
+       title = "Quarterback Efficiency, 2016 - 2021",
+       caption = "Data: @nflfastR") +
+  theme_bw() + 
+  theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold")) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+### QB Garbage Time
+
+```{r}
+pbp1 <- pbp %>%
+  filter(!is.na(epa)) %>%
+  filter(!is.na(passer))
+
+non_gb_time <- pbp1 %>%
+  filter(qb_dropback == 1) %>%
+  filter(wp > 0.05 & wp < 0.95) %>%
+  group_by(passer) %>%
+  summarise(
+    non_gb_passes = n(), 
+    epa_per_db = mean(epa)
+    )
+
+gb_time <- pbp1 %>%
+  filter(qb_dropback == 1) %>%
+  filter(wp < 0.05 | wp > 0.95) %>%
+  group_by(passer) %>%
+  summarise(
+    gb_passes = n(), 
+    gb_epa = mean(epa)
+    )
+
+player_teams <- pbp1 %>%
+  group_by(passer, posteam) %>%
+  summarise(snaps = n()) %>%
+  top_n(1) %>%
+  left_join(teams_colors_logos, by = c("posteam" = "team_abbr"))
+
+all_time <- non_gb_time  %>%
+  left_join(gb_time, by = c("passer")) %>%
+  left_join(player_teams, by = c("passer")) %>%
+  arrange(desc(snaps)) %>%
+  slice_head(n = 40)
+```
+
+
+```{r}
+all_time %>%
+  ggplot() +
+  geom_smooth(aes(
+    x = epa_per_db, 
+    y = gb_epa), 
+    method = "lm", colour = "grey", se = FALSE) +
+  ggrepel::geom_text_repel(aes(
+    x = epa_per_db, 
+    y = gb_epa, 
+    label = passer), 
+    box.padding = 0.3, size = 5) +
+  geom_point(aes(
+    x = epa_per_db, 
+    y = gb_epa, 
+    size = snaps, 
+    fill = team_color, 
+    color = team_color2), shape = 21) +
+  geom_hline(yintercept = mean(all_time$gb_epa), colour = "black", linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = mean(all_time$epa_per_db), colour = "black", linetype = "dashed", alpha = 0.5) +
+  scale_color_identity(aesthetics = c("fill", "color")) +
+  scale_size(name = "Dropbacks") +
+  theme_538() +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  labs(
+    x = "Non-Garbage Time EPA/dropback", 
+    y = "Garbage Time EPA/dropback",
+    title = "QB EPA Differences In Garbage Time",
+    subtitle = "Min 600 Dropbacks, Garbage Time is WP >= 95% or <= 5%"
+    )
+```
+
+### QB after being pressured
+
+```{r}
+#might have issues since you only did 1 year for df
+
+pbp_pressure <- pbp %>%
+  filter(pass == 1 | rush == 1) %>%
+  filter(season == 2021) %>%
+  group_by(game_id, posteam) %>%
+  mutate(hit_prev_play = lag(qb_hit))
+
+passer_teams <- pbp %>%
+  group_by(passer, posteam) %>%
+  summarise(plays = n()) %>%
+  top_n(1) %>%
+  left_join(teams_colors_logos, by = c("posteam" = "team_abbr"))
+
+passers <- pbp_pressure %>%
+  filter(!is.na(passer)) %>%
+  filter(hit_prev_play == 1) %>%
+  group_by(passer) %>%
+  summarise(
+    pres_passes = n(),
+    ypa = mean(air_yards, na.rm = TRUE),
+    epa = mean(epa, na.rm = TRUE)
+    ) %>%
+  filter(pres_passes >= 10) %>%
+  left_join(passer_teams, by = c("passer"))
+```
+
+```{r}
+passers %>%
+  ggplot(aes(
+    x = epa, 
+    y = ypa)) +
+  geom_point(aes(
+    size = pres_passes, 
+    fill = team_color, 
+    color = team_color2), shape = 21) +
+  ggrepel::geom_text_repel(aes(label = passer), size = 4, box.padding = 0.20) +
+  theme_538() +
+  geom_hline(yintercept = mean(passers$ypa), linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = mean(passers$epa), linetype = "dashed", alpha = 0.5) +
+  scale_size(name = "Passes After Pressure") +
+  scale_color_identity(aesthetics = c("fill", "color")) +
+  labs(
+    x = "EPA After Pressure", 
+    y = "Yard Per Attempt After Pressured",
+    title = "How Quarterbacks Perform on Plays After Being Pressured",
+    subtitle = "2021, minimum of 10 passes after being pressured, bubble size is sample size",
+    caption = "@becausejustyn"
+    ) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+```
+
+

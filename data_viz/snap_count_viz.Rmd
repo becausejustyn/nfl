@@ -1,0 +1,231 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+pbp <- read_rds("Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
+  filter(season_type == 'REG')
+```
+
+```{r}
+play_count_weekly <- pbp %>%
+  filter(!is.na(posteam)) %>%
+  group_by(posteam, week) %>%
+  summarise(
+    play_count = sum(pass_attempt, rush_attempt, sack, na.rm = TRUE)
+  ) %>% 
+  ungroup() %>% 
+  left_join(
+    nflfastR::teams_colors_logos %>% 
+      select(team_abbr, team_name, team_color, team_color2, team_color3, team_color4), 
+    by = c("posteam" = "team_abbr")) 
+```
+
+```{r}
+#extrafont::loadfonts()
+
+plot1 <- play_count_weekly_summ %>% 
+  ggplot() +
+  geom_col(aes(x = fct_reorder(posteam, mean_plays), y = mean_plays, fill = team_color, colour = team_color2), alpha = 0.6, width = 0.9, size = 0.5) +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(55, 75, 5)) +
+  coord_flip(ylim = c(55, 75)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  theme(
+    axis.text = element_text(face = "bold"),
+    axis.ticks = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_line(color = "lightgrey")) +
+    labs(
+      y = "Average Plays",
+      x = "") +
+  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11)
+```
+
+```{r}
+plot1
+```
+
+```{r}
+plot2 <- play_count_weekly_summ %>% 
+  ggplot() +
+  geom_col(aes(x = fct_reorder(posteam, mean_plays), y = mean_plays, fill = team_color, colour = team_color2), alpha = 0.6, width = 0.9, size = 0.5) +
+  geom_hline(data = data.frame(x = seq(55, 75, 5)), aes(yintercept = x), color = "#464950", size = 0.5) +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(55, 75, 5)) +
+  coord_flip(ylim = c(55, 75)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
+  theme(
+    axis.text = element_text(face = "bold"),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()) +
+  labs(
+    y = "Average Plays",
+    x = "") 
+```
+
+```{r}
+plot2
+```
+
+```{r}
+plot3 <- play_count_weekly_summ %>% 
+  ggplot() +
+  geom_col(aes(x = fct_reorder(posteam, mean_plays), y = mean_plays, fill = team_color, colour = team_color2), alpha = 0.6, width = 0.9, size = 0.5) +
+  geom_text(aes(x = fct_reorder(posteam, mean_plays), y = mean_plays, label = mean_plays), color = "white", hjust = 1.05, fontface = "bold", position = position_nudge(x = -.020)) +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(55, 75, 5)) +
+  coord_flip(ylim = c(55, 75)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
+  theme(
+    axis.text = element_text(face = "bold"),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()) +
+  labs(
+    y = "Average Plays",
+    x = "") 
+```
+
+```{r}
+plot3
+```
+
+```{r}
+plot4 <- play_count_weekly_summ %>% 
+    slice_max(mean_plays, n = 10) %>%
+    ggplot() +
+    geom_col(aes(
+      x = mean_plays, y = fct_reorder(posteam, mean_plays), fill = team_color, colour = team_color2), alpha = 0.6, width = 0.3, size = 0.5) +
+    geom_text(aes(
+      x = 0, y = fct_reorder(posteam, mean_plays), label = posteam, colour = team_color2), hjust = 0, position = position_nudge(y = 0.4), fontface = "bold") +
+    geom_text(aes(
+      x = mean_plays, y = fct_reorder(posteam, mean_plays), label = mean_plays, colour = team_color2), hjust = 1, position = position_nudge(x = -.02, y = 0.3), fontface = "bold") +
+    scale_color_identity(aesthetics = c('fill', 'colour')) +
+    hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
+    theme(
+        text = element_text(face = "bold"),
+        axis.text = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank()) +
+    labs(y = "", x = "")
+```
+
+```{r}
+plot4
+```
+
+## Total
+
+```{r}
+play_count_weekly <- pbp %>%
+  filter(!is.na(posteam)) %>%
+  group_by(posteam, week) %>%
+  summarise(
+    play_count = sum(pass_attempt, rush_attempt, sack, na.rm = TRUE)
+  ) %>% 
+  ungroup() %>% 
+  left_join(
+    nflfastR::teams_colors_logos %>% 
+      select(team_abbr, team_name, team_color, team_color2, team_color3, team_color4), 
+    by = c("posteam" = "team_abbr")) 
+```
+
+```{r}
+#play_count_weekly %>% count(posteam, wt = play_count) %>% arrange(n)
+
+play_count_weekly %>%
+  ggplot(aes(
+    x = reorder(posteam, play_count), 
+    weight = play_count, 
+    colour = team_color2, fill = team_color)) +
+  geom_bar() +
+  coord_flip(ylim = c(950, 1250)) +
+  scale_y_continuous(breaks = seq(950, 1250, 50)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  tomtom::theme_538() +
+  labs(
+    x = '', y = '',
+    title = 'Offensive Plays 2021'
+  )
+```
+
+## Weekly Snap Count
+
+```{r}
+play_count_weekly %>% 
+  group_by(posteam, team_color, team_color2) %>% 
+  summarise(mean_plays = mean(play_count)) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = reorder(posteam, mean_plays), 
+    weight = mean_plays, 
+    colour = team_color2, fill = team_color)) +
+  geom_bar() +
+  coord_flip(ylim = c(55, 75)) +
+  scale_y_continuous(breaks = seq(55, 75, 5)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  tomtom::theme_538() +
+  labs(
+    x = '', y = '',
+    title = 'Offensive Plays 2021'
+  )
+```
+
+Mean can be deceptive, so having an idea of the range can be helpful
+
+```{r min_max_plays}
+#getting the min and max for each group
+play_count_weekly %>%
+  group_by(posteam) %>% 
+  filter(play_count %in% c(min(play_count), max(play_count))) %>%
+  mutate(play_range = max(play_count) - min(play_count)) %>%
+  ungroup() 
+
+#if there are ties it can create issues, so this is another option
+play_count_weekly %>%
+  group_by(posteam) %>%
+  arrange(play_count) %>% 
+  slice(c(1, n())) %>%
+  mutate(play_range = max(play_count) - min(play_count)) %>%
+  ungroup()
+
+#returns the highest and lowest 
+play_count_weekly %>%
+  group_by(posteam) %>%
+  arrange(play_count) %>% 
+  slice(c(1, n())) %>%
+  mutate(play_range = max(play_count) - min(play_count)) %>%
+  distinct(play_range, .keep_all = TRUE) %>%
+  ungroup() %>%
+  arrange(play_range) %>% 
+  slice(c(1, n()))
+```
+
+```{r}
+play_count_weekly %>%
+  group_by(posteam) %>%
+  arrange(play_count) %>% 
+  slice(c(1, n())) %>%
+  mutate(play_range = max(play_count) - min(play_count)) %>%
+  distinct(posteam, .keep_all = TRUE) %>%
+  ungroup() %>%
+  ggplot(aes(
+    x = reorder(posteam, play_range), 
+    weight = play_range, 
+    colour = team_color2, fill = team_color)) +
+  geom_bar() +
+  coord_flip(ylim = c(15, 55)) + 
+  scale_y_continuous(breaks = seq(15, 55, 10)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  tomtom::theme_538() +
+  labs(
+    x = '', y = '',
+    title = 'Range of Offensive Plays 2021'
+  )
+```
+
+This gets interesting because at the bottom (more consistent teams) you see some bad teams such as Seattle and the Giants. They are consistent, but are consistently bad
+
+

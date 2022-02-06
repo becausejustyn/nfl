@@ -1,0 +1,48 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(beeswarm) 
+library(ggbeeswarm)
+
+dat <- purrr::map_df(c(2016:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+})
+```
+
+```{r}
+dat <- dat %>%
+  filter(season_type == 'REG')
+```
+
+```{r}
+fourth_down_rates <- dat %>% 
+  mutate(
+    scrimmage_play = special_teams_play == 0,
+    scrimmage_play1 = play_type %in% c('run', 'pass'),
+    scrimmage_play2 = play_type_nfl %in% c('RUSH', 'PASS')
+    ) %>%
+  filter(down == 4, ydstogo <= 4) %>% 
+  group_by(posteam, season) %>% 
+  summarise(
+    go_forit_rate = mean(scrimmage_play), 
+    n_chances = n())
+```
+
+```{r}
+fourth_down_rates %>% 
+  ggplot(aes(x = season, y = go_forit_rate, fill = go_forit_rate)) + 
+  geom_quasirandom(pch = 21, size = 3) + 
+  scale_fill_viridis_c("",  guide = 'none', option = 'E') + 
+  scale_x_continuous(labels = 2016:2021, breaks = 2016:2021) + 
+  scale_y_continuous(labels = scales::percent) + 
+  labs(title = "Go-for-it rate, 4th-4 or less", y = "", x = "") +
+  hrbrthemes::theme_ft_rc()
+```
+
+

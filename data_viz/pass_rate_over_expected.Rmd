@@ -1,0 +1,159 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(nflfastR)
+library(ggimage)
+library(gt)
+library(ggthemes)
+
+pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
+  filter(season_type == 'REG')
+rosters <- read_rds("~/Documents/nfl/data/roster/roster_2021.rds")
+
+#extrafont::loadfonts()
+```
+
+```{r theme_538}
+theme_538 <- function(base_size = 12, font = "Lato") {
+
+  # Text setting
+  txt <- element_text(size = base_size + 2, colour = "black", face = "plain")
+  bold_txt <- element_text(
+    size = base_size + 2, colour = "black",
+    family = "Montserrat", face = "bold"
+  )
+  large_txt <- element_text(size = base_size + 4, color = "black", face = "bold")
+
+
+  theme_minimal(base_size = base_size, base_family = font) +
+    theme(
+      # Legend Settings
+      legend.key = element_blank(),
+      legend.background = element_blank(),
+      legend.position = "bottom",
+      legend.direction = "horizontal",
+      legend.box = "vertical",
+
+      # Backgrounds
+      strip.background = element_blank(),
+      strip.text = large_txt,
+      plot.background = element_blank(),
+      plot.margin = unit(c(1, 1, 1, 1), "lines"),
+
+      # Axis & Titles
+      text = txt,
+      axis.text = txt,
+      axis.ticks = element_blank(),
+      axis.line = element_blank(),
+      axis.title = bold_txt,
+      plot.title = large_txt,
+
+      # Panel
+      panel.grid = element_line(colour = NULL),
+      panel.grid.major = element_line(colour = "#D2D2D2"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank(),
+      panel.border = element_blank()
+    )
+}
+```
+
+```{r}
+pbp_rp <- pbp %>%
+  filter(pass == 1 | rush == 1) 
+
+proe_season <- pbp_rp %>%
+  group_by(posteam, week) %>%
+  summarise(
+    proe = mean(pass_oe, na.rm = TRUE)
+    ) %>%
+  left_join(teams_colors_logos, by = c("posteam" = "team_abbr")) %>%
+  mutate(
+    division = case_when(
+      posteam %in% c("GB", "MIN", "DET", "CHI") ~ "NFC North",
+      posteam %in% c("ATL", "CAR", "NO", "TB") ~ "NFC South",
+      posteam %in% c("DAL", "NYG", "PHI", "WAS") ~ "NFC East",
+      posteam %in% c("ARI", "LA", "SEA", "SF") ~ "NFC West",
+      posteam %in% c("BAL", "CIN", "CLE", "PIT") ~ "AFC North",
+      posteam %in% c("HOU", "IND", "JAX", "TEN") ~ "AFC South",
+      posteam %in% c("BUF", "MIA", "NE", "NYJ") ~ "AFC East",
+      posteam %in% c("DEN", "KC", "LV", "LAC") ~ "AFC West"
+    ),
+    conference = case_when(
+      division %in% c("AFC North", "AFC South", "AFC East", "AFC West") ~ "AFC",
+      TRUE ~ "NFC"
+    )
+  ) %>%
+  mutate(
+    division = as_factor(division),
+    conference = as_factor(conference)
+  )
+```
+
+## NFC Pass Rate Over Expected
+```{r}
+proe_season %>%
+  filter(conference == "NFC") %>%
+  ggplot(aes(x = week, y = proe)) +
+  geom_bar(aes(
+    fill = team_color, color = team_color2), 
+    stat = "identity", alpha = 0.9) +
+  scale_color_identity(aesthetics = c("fill", "color")) +
+  facet_wrap(.~division + posteam) +  
+  scale_x_continuous(breaks = seq(1, 18, 2)) +
+  theme_538() +
+  labs(
+    x = "Week",
+    y = "Pass Rate Over Expected",
+    title = "Pass Rate Over Expected NFC, 2021",
+    caption = "data: nflfastr | @becausejustyn"
+    ) +
+  theme(
+    plot.title = element_text(size = 18, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text = element_text(size = 13),
+    panel.grid.major.x = element_line(size = 0.1),
+    strip.text.x = element_text(size = 14)
+    )
+```
+
+## AFC Pass Rate Over Expected
+```{r}
+proe_season %>%
+  filter(conference == "AFC") %>%
+  ggplot(aes(x = week, y = proe)) +
+  geom_bar(aes(
+    fill = team_color, color = team_color2), 
+    stat = "identity", alpha = 0.9) +
+  scale_color_identity(aesthetics = c("fill", "color")) +
+  facet_wrap(.~division + posteam) +  
+  scale_x_continuous(breaks = seq(1, 18, 2)) +
+  theme_538() +
+  labs(
+    x = "Week",
+    y = "Pass Rate Over Expected",
+    title = "Pass Rate Over Expected AFC, 2021",
+    caption = "data: nflfastr | @becausejustyn"
+    ) +
+  theme(
+    plot.title = element_text(size = 18, hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text = element_text(size = 13),
+    panel.grid.major.x = element_line(size = 0.1),
+    strip.text.x = element_text(size = 14)
+    )
+```
+
+
+
+
+
+
+
+
+

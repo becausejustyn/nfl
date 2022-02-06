@@ -1,0 +1,291 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# NFL Ratings via MLE
+
+
+```
+#https://www.sportsbook.football/nfl-ratings-via-maximum-likelihood-estimation-in-r/
+
+#https://support.microsoft.com/en-us/office/define-and-solve-a-problem-by-using-solver-5d1a388f-079d-43ac-a7eb-f63e45925040?redirectsourcepath=%252fen-us%252farticle%252fusing-solver-to-rate-sports-teams-f063257d-1008-46b7-8811-c723c64a7651
+
+#https://www.amazon.com/Mathletics-Gamblers-Enthusiasts-Mathematics-Basketball/dp/0691154589
+```
+
+Basically a linear programming problem.  
+
+```{r}
+library(tidyverse)
+library(alabama)
+```
+
+## Creating the model
+
+
+1. Get scores for this NFL season. We’re going to put them in a dataframe.
+2. Create a ratings vector for each team and enter a `guess` for each team’s rating. This doesn’t need to be close as the **optimisation** will find the ratings that best explain this season’s results. To start, we’ll use `0` for each team.
+3. Create a **forecast** vector (or column). This forecast is the number of `points` we expect the home team to defeat the visitor by. (If this number is negative we expect the home team to lose. The formula we’re using for the forecast is `Home Edge + Home Team Rating - Away Team Rating`. Home Edge is the home field advantage. The standard NFL home field advantage is 3, but we’ll let the model determine the optimal value.
+4. Subtract the forecast from the actual score for each game. Call this the `residual`. To start `square` these results to avoid the *negative residuals* from canceling out positive ones.
+5. Minimise the sum of the squared residual vector.
+
+***
+
+```{r}
+#https://github.com/fivethirtyeight/nfl-elo-game
+nfl_scores_url <- 'https://projects.fivethirtyeight.com/nfl-api/2017/nfl_games_2017.csv'
+nfl <- read_csv(nfl_scores_url)
+glimpse(nfl)
+```
+
+### Cleaning up the data
+
+- All the games are in the `2017` season. Therefore no need for a `season` column.
+- Get rid of the `ELO rating` and `probability` columns.
+- There’s still weeks before the `playoffs` so that column isn’t important.
+- Scores will do, no need for the `result` column.
+
+Games on `neutral fields` should alter the forecast formula, there’s no `home field advantage`.
+
+We’re keeping the following columns:
+
+- `date`
+- `neutral`
+- `team1` and `team2` but changing the names to `home` and `away`
+- `score1` and `score2` but changing the names to `h_score` and `a_score`
+
+The data doesn’t specify which team is `home` but a quick look at week one’s scores show that `team1` and `score1` is the `home team` and `score`. 
+
+- Changing the column names isn’t necassary but you’ll be glad you did next season if you come back to the `script`. It’s one less thing to remember/look up.
+
+Add a `margin of victory` column for the `home` team. We’re going to need this later.
+
+```{r}
+games <- nfl %>%  # remove future games
+  select(date, 
+         neutral, 
+         home = team1, 
+         away = team2, 
+         h_score = score1, 
+         a_score = score2) %>% 
+  mutate(h_mov = h_score - a_score)
+```
+  
+Let’s look at those neutral games.
+
+```{r}
+paste("There was", 
+      nrow(games),
+      "games played in 2017.",
+      sum(games$neutral),
+      "of those games were played on a neutral field.")
+```
+
+`6` shouldn’t have a huge impact. It’s a little less than three percent of games. We’ll test that theory. First we’ll ignore neutral games.
+
+Create the basic forecast function. Remember the formula is `Home Edge + Home Team Rating - Away Team Rating`.
+
+```{r}
+home_forecast <- function(home_rating, visitor_rating, home_edge) {
+  (home_edge + home_rating) - visitor_rating
+  }
+```
+
+Create the `ratings` vector
+
+Create a vector consisting of every team in the NFL.
+
+```{r}
+teams <- sort(unique(games$home))
+length(teams) == 32 # there's 32 NFL teams
+```
+
+
+To start each team will be given a rating of `0`. We’re also going to add an extra `0` to represent the `home field edge or advantage`. Finally, add the team names to the `ratings` vector. This is for matching and updating ratings (discussed later).
+
+
+```{r}
+ratings <- rep(0,33)
+names(ratings) <- c(teams, 'hfa') # hfa = home field advantage
+```
+
+## The loss function
+
+`constrOptim.nl` is the function from the `alabama` package that will perform the optimisation. The function’s argument fn is a
+
+> Nonlinear objective function that is to be optimized. A scalar function that takes a real vector as argument and returns a scalar that is the value of the function at that point.
+
+In other words, we need to create a function that sums the *squared errors* between the *forecast* and *actual game scores*. `constrOptim.nl` *minimises* this number by trying out different team ratings. When a minimum is reached the algorithm will stop and we can access the team ratings that best explain the results so far this season.
+
+The function is simple. Pass in the team ratings as the argument. The forecast for each game is calculated via the `home_forecast` function. Each team’s rating is looked up by passing the home and away columns to ratings vector matching the ratings names to the value in the columns. The home field edge is matched up with the 33rd element in the ratings vector. Next, a error column named resid subtracts the forecast from the home team’s margin of victory, this value is squared. All of the squared errors are summed up in the `summarise` function in the column sse. That scalar value is returned. This returned value is the number `constrOptim.nl` will attempt to minimize.
+
+```{r}
+sqr_err <- function(ratings) {
+  games %>%
+    mutate(forecast = home_forecast(
+      ratings[home],
+      ratings[away],
+      ratings[33]
+    )) %>% # 33 is the hfa
+    mutate(resid = (h_mov - forecast)^2) %>%
+    summarise(sse = sum(resid)) %>%
+    pull(sse)
+}
+```
+
+## The constraints
+
+Winston’s article suggests setting up a constraint in excel’s solver.
+
+> It is convenient to make our average team rating equal to 0. A team with a positive rating is better than average and a team with a negative rating is worse than average.
+
+`alabama’s` way of doing this feels a little akward to me but it works. We need the `mean` of the `team ratings vector` to equal `0` when the `optimisation` is complete. Remember that the ratings vector includes the `hfa`. That needs to be removed from the calculation.
+
+`alabama` makes us place this constraint in a function. Because our constraint is that the team ratings must average to zero the function must be passed via the `heq` argument.
+
+> a vector function specifying equality constraints such that heq[j] = 0 for all j
+
+The structure of this function is taken directly from the `alabama` documentation.
+
+```{r}
+set_team_avg_zero <- function(ratings) {
+  h <- rep(NA, 1)
+  h[1] <- mean(ratings[-33])
+  h
+}
+
+set_team_avg_zero(ratings)
+```
+
+It’s not too tough to parse out what’s going on. Inside the function `h` is a vector of constraints. Assign the equality, i.e. this value on the right hand side of the assignment arrow must equal zero. Return the vector of constraints.
+
+## Run the model
+
+From here it’s easy. We need to pass constrOptim.nl three arguments.
+
+1. `par` starting vector of parameter values. The `ratings` vector.
+2. `fn` function that is to be optimised. The `sqr_err` function.
+3. `heq` a vector function specifying equality constraints. The `set_team_avg_zero` function.
+
+There’s a lot of message output with `constrOptim.nl`. To save space I’ll surpress it here. There’s nothing we can’t get out ourselves later.
+
+- note: when you run this on your own computer it will take a minute.
+
+```{r}
+mod <- constrOptim.nl(
+  par = ratings,
+  fn = sqr_err,
+  heq = set_team_avg_zero
+)
+```
+
+mod is a list of six items. The item we’re interested is `$par`
+
+```{r}
+sse_ratings <- mod$par
+sse_ratings
+```
+
+These are our team ratings. According to the model this season’s home field advantage is 2.42 points. If we want to get the rankings we sort the vector is descending order.
+
+Here’s the top 10 teams in the NFL by our rating system.
+
+```{r}
+tibble(teams = names(sse_ratings),
+       rankings = sse_ratings) %>% 
+  arrange(desc(rankings)) %>% 
+  head(10) %>% 
+  knitr::kable()
+```
+
+## What about the neutral games?
+
+Remember we’re ignoring the fact that four of the games were played on a neutral field. Does accounting for neutral games improve the model?
+
+```{r}
+paste("As of now the SSE is", round(mod$value,3))
+```
+
+To factor in neutral games we need to alter the forecast function
+
+```{r}
+home_forecast_neutral <- function(home_rating,
+                                  visitor_rating,
+                                  home_edge,
+                                  is_neutral) {
+  ifelse(is_neutral,
+    home_rating - visitor_rating,
+    (home_edge + home_rating) - visitor_rating
+  )
+}
+```
+
+The code above checks if a game is neutral. If it is the home edge is removed from the formula otherwise it’s the same as before.
+
+We also need to change the `loss` function.
+
+```{r}
+sqr_err_neutral <- function(ratings) {
+  games %>%
+    mutate(forecast = home_forecast_neutral(
+      ratings[home],
+      ratings[away],
+      ratings[33],
+      neutral
+    )) %>% # 33 is the hfa
+    mutate(resid = (h_mov - forecast)^2) %>%
+    summarise(sse = sum(resid)) %>%
+    pull(sse)
+}
+```
+
+Let’s create a new ratings vector.
+
+```{r}
+neutral_ratings <- rep(0,33)
+names(neutral_ratings) <- c(teams, 'hfa') # hfa = home field advantage
+```
+
+Now we can re-run the model.
+
+```{r}
+mod_neutral <- constrOptim.nl(par = neutral_ratings,
+                      fn = sqr_err_neutral,
+                      heq = set_team_avg_zero)
+```
+
+The difference between the two models isn’t worth the extra effort IMO.
+
+```{r}
+tibble(with_neutral_mod = mod_neutral$value,
+       without_netural_mod = mod$value) %>% 
+  knitr::kable()
+```
+
+## Using Ratings for Point Spreads
+
+While it’s interesting to compare results to other rating systems we’re really interested in predictions the model makes.
+
+To do this we’ll create a function that predicts the home team’s margin of victory by sticking the home_forecast function inside another function.
+
+```{r}
+get_pointspred <- function(ratings, home, away){
+  home_forecast(ratings[home],
+                ratings[away],
+                ratings['hfa']) %>% 
+    round(2)
+}
+```
+
+Below is an example how you could use the ratings to predict point spreads. Obviously you want to predict games in the future but it works for an illustration.
+
+```{r}
+nfl %>% 
+  filter(date == '2018-02-04') %>% 
+  select(date, home = team1, away = team2) %>% 
+  mutate(spread = get_pointspred(mod$par, home, away)) %>% 
+  knitr::kable()
+```
+
+

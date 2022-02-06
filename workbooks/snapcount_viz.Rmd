@@ -1,0 +1,164 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+```
+
+
+```{r}
+pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
+  filter(season_type == 'REG')
+```
+
+# Snap Counts
+
+## Team 
+
+```{r}
+df <- pbp %>%
+  #filter(is.na(play_type)) %>%
+  filter(
+    !is.na(down) & 
+      !is.na(play_type) & 
+      !is.na(penalty)) %>%
+  group_by(game_id, posteam) %>%
+  summarise(
+    snaps = sum(play)
+  ) %>%
+  group_by(posteam) %>%
+  summarise(
+    snaps = sum(snaps)
+  ) %>%
+  left_join(
+    nflfastR::teams_colors_logos %>% 
+      select(team_abbr, team_color, team_color2, team_color3, team_color4), 
+    by = c("posteam" = "team_abbr")) %>%
+  mutate(
+    team_fact = as_factor(posteam),
+    team_fact = fct_reorder(team_fact, -snaps)
+  )
+```
+
+```{r}
+df %>%
+  ggplot() +
+  geom_col(
+    aes(x = snaps, y = fct_reorder(posteam, snaps),
+        fill = team_color, colour = team_color2), width = 0.9, size = 0.5
+  ) +
+  coord_cartesian(xlim = c(850, 1125)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
+  labs(
+    y = 'Offensive Snaps',
+    x = 'Team',
+    title = 'Offensive Snaps by Team',
+    subtitle = '2021, Regular Season'
+  )
+```
+
+## Player by Season
+
+```{r}
+snap_count_2021 <- read_csv("~/Documents/nfl/data/snap_count/snap_count_2021.csv")
+
+snap_df <- snap_count_2021 %>%
+  left_join(
+    nflfastR::teams_colors_logos %>% 
+      select(team_abbr, team_color, team_color2), 
+    by = c("team" = "team_abbr")) %>%
+  filter(
+    position %in% c('WR', 'TE') &
+      offense_snaps > 2 &
+      game_type == 'REG'
+      ) %>%
+  group_by(pfr_player_id, player, team, team_color, team_color2, position) %>%
+  summarise(
+    snaps = sum(offense_snaps)
+  ) %>% 
+  ungroup() %>%
+  mutate(team_factor = as_factor(team))
+```
+
+```{r}
+snap_df %>%
+  slice_max(snaps, n = 25) %>%
+  mutate(
+    rank = as.integer(rank(-snaps))) %>%
+  ggplot() +
+  geom_col(
+    aes(x = snaps, y = fct_reorder(player, snaps),
+        fill = team_color, colour = team_color2), width = 0.9, size = 0.5
+  ) +
+  coord_cartesian(xlim = c(850, 1025)) +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
+  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
+  labs(
+    x = 'Offensive Snaps',
+    y = 'Player',
+    title = 'Offensive Snaps by Player',
+    subtitle = '2021, Regular Season'
+  )
+```
+
+## Player by Game
+
+This I can filter by at least 15 snaps or something
+
+```{r}
+snap_game <- snap_count_2021 %>%
+  left_join(
+    nflfastR::teams_colors_logos %>% 
+      select(team_abbr, team_color, team_color2, team_color3, team_color4), 
+    by = c("team" = "team_abbr")) %>%
+  filter(
+    position %in% c('WR', 'TE') &
+      offense_snaps > 2 &
+      game_type == 'REG'
+      ) %>%
+  group_by(pfr_player_id, player, team, opponent, week, game_id, pfr_game_id, team_color, team_color2, team_color3, team_color4) %>%
+  summarise(
+    snaps = sum(offense_snaps)
+  ) %>% 
+  ungroup() %>%
+  mutate(team_factor = as_factor(team))
+```
+
+```{r}
+p1 <- snap_game %>%
+  mutate(
+    across("team_color2", str_replace, "#c60c30", "#b0b7bc"),
+    game_label = paste0("Week ", week, ", ", team, " vs. ", opponent)
+    ) %>%
+  arrange(-snaps) %>%
+  mutate(rank = row_number()) %>%
+  filter(rank <= 15) %>%
+  ggplot() +
+  geom_col(
+    aes(x = snaps, y = fct_reorder(player, snaps), fill = team_color, colour = team_color3), 
+    width = 0.9, size = 0.5) + 
+  scale_color_identity(aesthetics = c("fill", "color")) 
+
+p1 +
+  geom_text(
+    aes(x = snaps, y = fct_reorder(player, snaps), label = game_label, colour = team_color2), 
+    hjust = 1, nudge_x = -.5, size = 4) +
+  geom_text(
+    aes(x = 50, y = player, label = snaps, colour = team_color2), 
+    hjust = 1) +
+  coord_cartesian(xlim = c(50, 90)) + 
+  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
+  labs(
+    x = 'Offensive Snaps',
+    y = 'Player',
+    title = 'Offensive Snaps by Player in a Single Game',
+    subtitle = '2021, Regular Season',
+    caption = 'Top 15 Games'
+  )
+```
+
+
+

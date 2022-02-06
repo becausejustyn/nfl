@@ -1,0 +1,984 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Bayesian Catch Rate
+
+`https://www.stat.cmu.edu/~ryurko/post/bayesian-baby-steps-intro/`
+
+-   **Likelihood** - plausibility of our observed data given a receiver's catch rate `p`
+
+-   **Parameter** - our quantity of interest `p`, which we want to learn about from our data
+
+-   **Prior** - our initial belief regarding different values for `p`
+
+We can just use the binomial distribution for our likelihood since we're assuming each of our `n` pass attempts is independent and that the receiver's catch probability `p` is the same for every attempt. We can then write the probability of observing `c` receptions in `n` pass attempts with a catch probability `p` as:
+
+$$
+Pr(c | n, p) = \frac{n!}{c!(n - c)!} p^{c}(1-p)^{n-c}
+$$
+
+Using Bayes' theorem to provide us with the probability of a value for the receiver's catch probability `p` given our observed data:
+
+$$
+Pr(p | c) = \frac{Pr(c|p)Pr(p)}{Pr(c)}
+$$
+
+`Statistical Rethinking: A Bayesian Course with Examples in R and Stan - Richard McElreath`
+
+McElreath refers to the denominator $Pr(c)$ as the average likelihood of the observed data over `p`. All it is is an expectation over all our possible values for `p`:
+
+$$
+Pr(c) = E \big[ Pr(c|p)\big] = \int Pr(c|p)Pr(p)dp
+$$
+
+The denonimator is known as the normalising constant because it ensures that our posterior density integrates to one, i.e. our posterior is actually a probability.
+
+What often happens is that this term is extremely difficult to compute. We usually consider the posterior up to the normalising constant as the product between the likelihood and prior.
+
+Or if this form isn't tractable, we resort to some approximation technique such as grid-based which we cover below, as well as quadratic and Markov Chain Monte Carlo (MCMC) methods.
+
+In formulating the posterior above, we're really just counting paths.
+
+-   We simply use multiplication as a quick way to count all the ways from our prior number of paths through our new number.
+-   McElreath also makes the excellent remark that **Bayesian inference is not defined by Bayes' theorem.**
+
+Everyone learns about Bayes theorem with some trivial examples like smoking and lung cancer, but that is not the point of Bayesian approaches.
+
+-   The point is to appropriately measure and account for the uncertainty in our models and parameters.
+-   We're not satisfied with stating, "Oh our receiver caught 5 of 5 passes - he never drops a pass!" - we want to capture the uncertainty in his reception probability given what we already knew, such as the belief it's pretty unlikely his catch rate is a perfect 100%.
+
+## Grid Approximation with JuJu
+
+Imagine you wanted to evaluate Juju in 2017 as the season went on.
+
+```{r}
+library(tidyverse)
+
+# Load the 2017 play-by-play data from my repository:
+juju_games <- 
+  read_csv("https://raw.githubusercontent.com/ryurko/nflscrapR-data/master/legacy_data/season_play_by_play/pbp_2017.csv") %>%
+  # Filter down only to the pass attempts to JuJu based on his GSIS ID 00-0033857:
+  filter(Receiver_ID == "00-0033857",
+         PassAttempt == 1) %>%
+  # Only select the GameID and PassOutcome columns:
+  select(GameID, PassOutcome) %>%
+  # Calculate the number of receptions, targets, and catch rate in each game:
+  group_by(GameID) %>%
+  # does sum also work?
+  # e.g. receptions2 = sum(PassOutcome == "Complete")
+  summarise(receptions = length(which(PassOutcome == "Complete")),
+            targets = n(),
+            catch_rate = receptions / targets) %>%
+  # Calculate cumulative stats:
+  mutate(total_receptions = cumsum(receptions),
+         total_targets = cumsum(targets),
+         total_catch_rate = total_receptions / total_targets,
+         # Columns to be used later:
+         index = 1:n(),
+         game_index = paste("game_", index, sep = ""),
+         game_index = fct_relevel(factor(game_index),
+                                  "game_1", "game_2", "game_3",
+                                  "game_4", "game_5", "game_6",
+                                  "game_7", "game_8", "game_9",
+                                  "game_10", "game_11", "game_12",
+                                  "game_13"))
+```
+
+Grid approximation provides us with a very simple set of steps to update our evaluation of JuJu's performance.
+
+-   The first step is to initialize our grid of values for JuJu's `p` we're going to estimate the posterior probability for, which in this case will be increments of 5% from 0 to 1:
+
+```{r}
+p <- seq(from = 0, to = 1, by = 0.05)
+```
+
+Then we define our prior belief for each of the possible values in the grid.
+
+-   Just to demonstrate, we'll use a flat prior which means we initially believe each of the grid values for `p` are equally likely. I expand on the prior below, but for now we use the following:
+
+```{r}
+prior <- rep(1, 21)
+```
+
+Next we'll calculate the likelihood for each of the grid values for `p` using the binomial distribution from above.
+
+-   We'll calculate the likelihood as if only one game was played (just grabbing the receptions and targets values from the first row of the data):
+
+```{r}
+likelihood <- dbinom(x = juju_games$receptions[1],
+                     size = juju_games$targets[1],
+                     prob = p_grid)
+```
+
+We're then able to calculate the numerator of Bayes' theorem by multiplying the prior by the likelihood, providing the unstandardized posterior for each of the grid values:
+
+```{r}
+bayes_numerator <- likelihood * prior
+```
+
+To arrive at the posterior estimates, we just follow Bayes' theorem and take these products and divide them by the sum of the numerators for each value on the grid. This is of course easy to do with in R with vectorized operations:
+
+```{r}
+posterior <- bayes_numerator / sum(bayes_numerator)
+```
+
+Our grid approximation for the posterior of JuJu's catch rate after one game can easily be viewed:
+
+```{r}
+tibble(p_grid = p_grid, p_posterior = posterior) %>%
+  ggplot(aes(x = p_grid, y = p_posterior)) +
+  geom_point(size = 3, color = "darkblue") + 
+  geom_line(color = "darkblue") +
+  # Add a vertical line for JuJu's observed catch rate:
+  geom_vline(xintercept = juju_games$catch_rate[1], color = "darkorange",
+             linetype = "dashed", size = 3, alpha = .5) +
+  # Label!
+  labs(x = "Catch rate", y = "Posterior probability",
+       title = "Posterior approximation for\nJuJu's catch rate after one game") +
+  # Clean it up:
+  theme_bw() + theme(axis.text = element_text(size = 10), 
+                     title = element_text(size = 10)) 
+```
+
+This gives us a full posterior distribution for JuJu's catch rate, rather than just his observed value of 0.75 after one game (indicated by the orange dashed line).
+
+-   We can also carry out this grid approximation procedure to generate posterior distributions for his catch rate after every game based on his running totals:
+
+```{r}
+# Create a data frame by applying the grid approximation steps to each row
+# of juju_games:
+game_posteriors <- map_dfc(c(1:nrow(juju_games)),
+                             function(x) {
+                               p_grid <- seq(from = 0, to = 1, by = .05)
+                               prior <- rep(1, 21)
+                               likelihood <- dbinom(x = juju_games$total_receptions[x],
+                                                    size = juju_games$total_targets[x],
+                                                    prob = p_grid)
+                               bayes_numerator <- likelihood * prior
+                               posterior <- bayes_numerator / sum(bayes_numerator)
+                               # Return this as a data frame:
+                               result <- data.frame(posterior)
+                               colnames(result) <- paste("game_", x, sep = "")
+                               return(result)
+                             })
+```
+
+Remember this is a flat prior
+
+```{r}
+# Join these columns with p_grid and column for the prior probability:
+data.frame(p_grid = p_grid, prior = rep(1 / 21, 21)) %>%
+  bind_cols(game_posteriors) %>% 
+  # Gather the columns so the data is long, one row for each week and grid value
+  gather(key = "game_index", value = "posterior_prob", -p_grid) %>%
+  # Relevel the game_index variable:
+  mutate(game_index = fct_relevel(factor(game_index),
+                                  "prior", "game_1", "game_2", "game_3",
+                                  "game_4", "game_5", "game_6",
+                                  "game_7", "game_8", "game_9",
+                                  "game_10", "game_11", "game_12",
+                                  "game_13")) %>%
+  # Visualize the posteriors for each game:
+  ggplot(aes(x = p_grid, y = posterior_prob)) + 
+  geom_point(size = 2, color = "darkblue") + 
+  geom_line(color = "darkblue") +
+  facet_wrap(~ game_index) +
+  # Add vertical lines for each cumulative observed rate
+  geom_vline(data = juju_games, 
+             aes(xintercept = total_catch_rate), color = "darkorange",
+             linetype = "dashed", size = 1, alpha = .5) +
+  geom_text(data = juju_games, size = 3,
+             x = .25, y = .3, aes(label = paste("Caught", 
+                                                receptions, "of",
+                                                targets, sep = " "))) +
+  # Label!
+  labs(x = "Catch rate", y = "Posterior probability",
+       title = "Posterior approximation for JuJu's catch rate after each game") +
+  # Clean it up:
+  theme_bw() + theme(axis.text.y = element_text(size = 10), 
+                     axis.text.x = element_text(size = 6),
+                     title = element_text(size = 10)) 
+```
+
+This plot gives us a pretty clear view of Bayesian updating.
+
+-   We start with a flat prior, believing any catch rate between 0 and 1 is equally likely.
+-   Then we keep updating our belief or understanding of what JuJu's catch is likely to be given his in game performances.
+-   Each dashed line marks his cumulative catch rate which, should not come as a surprise, is the most likely value after each game.
+-   After his second game where he only caught two of six passes we see a shift in the distribution. But as we keep observing games, the distributions move and become more concentrated around his final season catch rate of roughly 0.73.
+-   This exact same process holds and yields the same results if we updated after each individual target, after observing one event the resulting posterior becomes the prior for the next target.
+-   Which means that, although I generated the plot above using the flat prior andcumulative stats after each game, I could've also generated the same figure using the previous game's posterior as the prior for the following single game performance.
+-   It's just simpler from a coding point of view to present all of the data, but breaking it up individually provides us with the true step-wise view of updating.
+
+## Prior knowledge
+
+-   Why would anyone believe a receiver's catch is equally likely to be 0 as is 1?
+
+-   You might've noticed the fact that the posteriors are even just proportional to the likelihood, so we're really not taking advantage of the purpose of a prior distribution.
+
+-   We can use priors to incorporate expert knowledge into our model, helping us limit parameter values to a range that makes sense.
+
+    -   If you have ever learned about regularized regression, you can think of priors as accomplishing a similar task.
+    -   In fact Lasso regression can be intepreted this way. People often complain that the choice of prior is subjective, but if you think data analysis is entirely objective then you're ignorant of the truth.
+
+To choose a reasonable prior for JuJu's catch rate, we're going to take a data-driven approach or use Empirical Bayes.
+
+-   We'll estimate our prior using the distribution of catch rates by receivers in the 2016 season.
+-   With my `nflWAR` package it's pretty easy to grab statistics by players for certain positions.
+-   Here we only grab catch rates by WRs in 2016 with at least 25 targets:
+
+```{r}
+# devtools::install_github("ryurko/nflWAR")
+
+library(nflWAR)
+
+# Ignore any messages you see
+wr_catch_rates <- get_pbp_data(2016) %>%
+  add_positions(2016) %>%
+  add_model_variables() %>%
+  prepare_model_data() %>%
+  add_position_tables() %>%
+  join_position_statistics() %>%
+  pluck("WR_table") %>%
+  select(Player_ID_Name, Rec_Perc, Targets) %>%
+  filter(Targets >= 25)
+```
+
+Next we display our distribution of catch rates in the 2016 season:
+
+```{r}
+wr_catch_rates %>%
+  ggplot(aes(x = Rec_Perc)) + 
+  geom_density(color = "darkblue") +
+  geom_rug(color = "darkblue") + 
+  theme_bw() +
+  labs(x = "Catch rate", y = "Density", 
+       title = "Distribution of WR catch rates in 2016 (minimum 25 targets)")
+```
+
+-   We see concentration of catch rates between 0.5 and 0.6 with no receiver having a catch rate less than 0.4 or above 0.8.
+-   Because of the shape of this distribution and from the fact a receiver's catch rate must be between 0 and 1, it makes sense to use a beta distribution estimated from this data as our prior.
+-   This means we're assuming
+
+$$
+p \sim Beta(\alpha_{0}, \beta_{0})
+$$
+
+where we have to estimate the hyper-parameters (parameters for priors), $\alpha_{0}$ and $\beta_{0}$, from our data.
+
+`https://stats.stackexchange.com/questions/12232/calculating-the-parameters-of-a-beta-distribution-using-the-mean-and-variance`
+
+A very simple way to do this in R is with the method of moments using the mean and variance following the example in Robinson's post:
+
+```{r}
+# Use the fitdistr function from the MASS library:
+prior_beta_model <- MASS::fitdistr(wr_catch_rates$Rec_Perc, dbeta, 
+                                   start = list(shape1 = 10, shape2 = 10))
+
+# Extract the approximated  priors
+alpha0 <- prior_beta_model$estimate[1]
+beta0 <- prior_beta_model$estimate[2]
+```
+
+We'll now follow our grid approximation steps from before but instead use the approximated beta prior:
+
+```{r}
+# Create a data frame by applying the grid approximation steps to each row
+# of juju_games:
+new_game_posteriors <- map_dfc(c(1:nrow(juju_games)),
+                             function(x) {
+                               p_grid <- seq(from = 0, to = 1, by = .05)
+                               prior <- dbeta(p_grid, alpha0, beta0)
+                               likelihood <- dbinom(x = juju_games$total_receptions[x],
+                                                    size = juju_games$total_targets[x],
+                                                    prob = p_grid)
+                               bayes_numerator <- likelihood * prior
+                               posterior <- bayes_numerator / sum(bayes_numerator)
+                               # Return this as a data frame:
+                               result <- data.frame(posterior)
+                               colnames(result) <- paste("game_", x, sep = "")
+                               return(result)
+                             })
+```
+
+```{r}
+# Join these columns with p_grid and column for the prior probability:
+data.frame(p_grid = p_grid, 
+           prior = dbeta(p_grid, alpha0, beta0) / sum(dbeta(p_grid, alpha0, beta0))) %>%
+  bind_cols(new_game_posteriors) %>% 
+  # Gather the columns so the data is long, one row for each week and grid value
+  gather(key = "game_index", value = "posterior_prob", -p_grid) %>%
+  # Relevel the game_index variable:
+  mutate(game_index = fct_relevel(factor(game_index),
+                                  "prior", "game_1", "game_2", "game_3",
+                                  "game_4", "game_5", "game_6",
+                                  "game_7", "game_8", "game_9",
+                                  "game_10", "game_11", "game_12",
+                                  "game_13")) %>%
+  # Visualize the posteriors for each game:
+  ggplot(aes(x = p_grid, y = posterior_prob)) + 
+  geom_point(size = 2, color = "darkblue") + 
+  geom_line(color = "darkblue") +
+  facet_wrap(~ game_index) +
+  # Add vertical lines for each cumulative observed rate
+  geom_vline(data = juju_games, 
+             aes(xintercept = total_catch_rate), color = "darkorange",
+             linetype = "dashed", size = 1, alpha = .5) +
+  geom_text(data = juju_games, size = 3,
+             x = .25, y = .3, aes(label = paste("Caught", 
+                                                receptions, "of",
+                                                targets, sep = " "))) +
+  # Label!
+  labs(x = "Catch rate", y = "Posterior probability",
+       title = "Posterior approximation for JuJu's catch rate after each game") +
+  # Clean it up:
+  theme_bw() + theme(axis.text.y = element_text(size = 10), 
+                     axis.text.x = element_text(size = 6),
+                     title = element_text(size = 10)) 
+```
+
+Now with this informed prior we see a clear difference in the updating procedure compared to before.
+
+-   With the flat prior the catch rate with the peak posterior probability was always JuJu's cumulative catch rate after the game.
+-   Now we see how the prior distribution applies some resistance to the approximated posterior.
+-   For instance, after his second game where he only caught two of six targets, JuJu's catch rate dropped to 0.5 but the posterior doesn't shift as far to the left because of the prior pulling it back.
+-   This process continues the whole way, with the most likely value after the last game slightly less than JuJu's catch rate after the whole season - hence providing some regularization for our likely value of `p`.
+
+All I've talked about so far is using grid-based approach to reach this posterior approximation.
+
+-   But we actually know the analytical calculation for this example's posterior since the beta distribution is the conjugate prior to the binomial resulting in a posterior that also follows the beta distribution (not the focus of this post but here's more info).
+-   We can calculate this known result quite easily, displaying the density curve using JuJu's full season statistics in comparison to the final grid approximation:
+
+```{r}
+# Compuate the known posterior for 1000 points from 0 to 1:
+known_posterior <- data.frame(p_density = dbeta(seq(0, 1, length.out = 1000),
+                             # Add receptions to prior alpha
+                             juju_games$total_receptions[nrow(juju_games)] + alpha0,
+                             # Add incompletions to prior beta
+                             with(juju_games, 
+                                  (total_targets[nrow(juju_games)] - 
+                                     total_receptions[nrow(juju_games)]) + beta0)),
+           p_grid = seq(0, 1, length.out = 1000)) %>%
+  ggplot(aes(x = p_grid, y = p_density)) +
+  geom_line(color = "darkorange") +
+  # Label!
+  labs(x = "Catch rate", y = "Posterior density",
+       title = "Known posterior distribution using beta prior") +
+  # Clean it up:
+  theme_bw() + theme(axis.text = element_text(size = 10), 
+                     title = element_text(size = 10)) 
+
+
+grid_posterior <- new_game_posteriors %>%
+  select(game_13) %>%
+  bind_cols(data.frame(p_grid = p_grid)) %>%
+  ggplot(aes(x = p_grid, y = game_13)) + 
+  geom_point(size = 2, color = "darkblue") + 
+  geom_line(color = "darkblue") +
+  # Label!
+  labs(x = "Catch rate", y = "Posterior probability",
+       title = "Grid approximation") +
+  # Clean it up:
+  theme_bw() + theme(axis.text = element_text(size = 10), 
+                     title = element_text(size = 10)) 
+
+# Install cowplot if you don't have it!
+# install.packages("cowplot")
+cowplot::plot_grid(known_posterior, grid_posterior)
+```
+
+We see that our grid approximation with twenty points does a pretty good job of capturing the posterior distribution, and if we keep increasing the number of points in the grid it would follow this posterior exactly.
+
+-   While this is simple and incredibly easy for this example, when you are fitting a multilevel model with many parameters this just isn't practical.
+-   Hence the need for more efficient approaches like quadratic approximation or MCMC. But it's a great way to learn how Bayesian updating works.
+
+## Next steps
+
+-   The basic mechanics of Bayesian inference are intuitive and I hope this first post keeps you interested in learning more.
+-   We're estimating full posterior distributions for our values of interest, not just point estimates.
+-   This means we're always acknowledging the uncertainty in our values, something that is often ignored in sports statistics in particular.
+-   Obviously, this catch rate example is too simplistic - we're ignoring who is throwing the ball, the opposing defense, game situation, and also are not distinguishing dropped balls from bad throws.
+-   We'll keep working with this example as we move towards a full Bayesian multilevel model to account for what we can (Roger Goodell doesn't like to share data).
+-   You can take the exact same approach in this example for any binary outcome: catch/drop, win/lose, success/failure.
+-   Someone could easily take this code above and update their belief regarding a running back's Success Rate (% rushes with positive expected points added) as the season progresses using nflscrapR.
+
+`https://www.baseballprospectus.com/news/article/25514/moving-beyond-wowy-a-mixed-approach-to-measuring-catcher-framing/`
+
+# Bayesian Baby Steps: Normal Next Steps
+
+`https://www.stat.cmu.edu/~ryurko/post/bayesian-baby-steps-normal-next-steps/`
+
+While the grid-based approach is simple and easy to follow, it’s just not practical. 
+
+## Enter marquis de Laplace
+
+- In many cases we’re not able to derive the posterior distribution so some sort of approximation method is required.
+- Laplace realised that you can use a gaussian distribution for approximating the posterior if its roughly symmetric and unimodal.
+- The reason it’s often called quadratic approximation is because we use a quadratic function for approximating the logarithm of the posterior density, which we’ll denote as $p(\theta | x)$ 
+    - where $x$ is our observed data
+    - $\theta$ represents our parameter of interest 
+- This approximation uses the fact that the log of a Gaussian is a parabola - a quadratic function.
+- You simply take a Taylor series expansion of the log of the posterior density centered at the posterior mode $\hat{\theta}$,
+
+$$
+log \; p(\theta | x) = log \; p(\hat{\theta} | x) + \frac{1}{2} (\theta - \hat{\theta})^{T} \Big[ \frac{d^{2}}{d\theta^{2}} logp(\theta | x) \Big]_{\theta = \hat{\theta}} (\theta - \hat{\theta}) + \dots
+$$
+
+The mode represents the centre of the gaussian that we use to approximate the posterior. The posterior mode (*maximum a-posteriori*) is denoted by $\hat{\theta}_{MAP}$. The first term in the expansion above is merely a constant, but the second term provides us an estimate of the curvature near the posterior’s peak and is proportional to the log of a Gaussian density. 
+
+This provides us with the variance of the Gaussian to approximate the posterior as:
+
+$$
+p(\theta | x) \approx N(\hat{\theta}, [I(\hat{\theta})]^{-1})
+$$
+
+where $I(\hat{\theta})$ is an estimate for $I(\theta)$, the observed information
+
+$$
+I(\theta) = \frac{d^{2}}{d\theta^{2}} log \; p(\theta | x)
+$$
+
+That’s all we need for this approximation, the posterior mode and the curvature of the posterior density and BAM we have the entire posterior distribution. 
+
+- Well really an approximation of it - but from asymptotic theory the posterior distribution approaches a Gaussian under some conditions. 
+- I won’t get into the details, so definitely check out more of the theory yourself. 
+- I also recommend chapter four of the classic Bayesian Data Analysis by Gelman et al. `https://www.amazon.com/Bayesian-Analysis-Chapman-Statistical-Science/dp/1439840954`
+
+The excellent blog by Rasmus Bååth also has a post on Laplace approximation with a binomial example, like the catch rate model in the previous post, showing how the approximation using a Gaussian improves with more data despite the fact the posterior is actually a beta! 
+
+- `http://www.sumsar.net/blog/2013/11/easy-laplace-approximation/`
+
+
+## Modeling NFL score differential
+
+I’ll demonstrate the use of quadratic approximation with a model for an individual team’s score differential.
+
+```{r}
+# Load the tidyverse
+# install.packages("tidyverse")
+library(tidyverse)
+
+# Use the nflWAR package to get summaries of team performances for each season,
+# first install devtools if you don't have then install nflWAR:
+# install.packages("devtools")
+# devtools::install_github("ryurko/nflWAR")
+library(nflWAR)
+
+# Use the get_season_summary() function to create a dataset that has a row
+# for team-season with a column for their score differential from 2009 to 2017:
+team_summary_df <- get_season_summary(2009:2011)
+```
+
+Before going into the regression example with a predictor, it’s worthwhile to first demonstrate quadratic approximation by just modeling the score differential with a Gaussian. First step is to visualize the score differential distribution:
+
+```{r}
+# Create a histogram displaying the score differential distribution using
+# the the density instead so it's consistent for later: (also why I'm assigning
+# it to a variable name, so we can add our approximated posterior layer later)
+score_diff_hist <- team_summary_df %>%
+  ggplot(aes(x = Total_Score_Diff)) +
+  geom_histogram(aes(y = ..density..), bins = 20) + theme_bw() + 
+  scale_x_continuous(limits = c(-300, 300)) +
+  # Always label:
+  labs(x = "Score differential", y = "Density",
+       title = "Distribution of individual team score differential in each season from 2009-17 ",
+       caption = "Data accessed with nflscrapR") +
+  # Just some cosmetic settings: (really should do a custom theme at the 
+  # beginning instead of repeating this)
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 14))
+
+# Display the plot
+score_diff_hist
+```
+
+- From this histogram we have support for using a Gaussian, since it’s roughly symmetric and unimodal. 
+- Also, since an observed season score differential is the sum of the score differentials in each game, we can think of these values as following a random walk. 
+- Some teams will have large positive differentials, which means some team will have large negative differentials. 
+- I won’t go into the details but theoretically this process of summing together random values, assumed to be generated from the same distribution, will follow a Gaussian distribution. 
+- In other words - the Gaussian distribution is a reasonable choice here.
+
+We assume then that the general model for an observed score differential $S_{i}$, where $i = 1, \dots, 288$ is the index for an observed team-season score differential, follows a Gaussian distribution:
+
+$$
+S_{i} \sim N(\mu, \sigma^{2})
+$$
+
+Because we’re approaching this problem from a Bayesian perspective, we really want to consider an infinite number of possible Guassians based on all of the possible combinations for our parameters $\mu$ and $\sigma$. 
+
+- Of course we’re not going to actually look at every possible value for these parameters, laplace approximation will accomplish what we need. 
+- But, as I pointed out in the previous post, we’re interested in the entire posterior distribution - which in this case is a posterior distribution of distributions. 
+- So for a full model of score differential, we need priors for both $\mu$ and $\sigma$:
+
+$$
+S_{i} \sim N(\mu, \sigma^{2}) \\
+\mu \sim N(0, 100^{2}) \\
+\sigma \sim Uniform(0, 200)
+$$
+
+- This is a really naive model, just to demonstrate Laplace approximation. Next we’ll implement the same code in the Bååth blog post which uses the `optim` function in `R` to find the mode of the posterior and also returns the Hessian matrix for the curvature (following the observed information definition above. 
+- For ease, we’ll roughly follow his example code which also uses the `mvtnorm` packages for sampling from the approximated posterior (this sampling isn’t really necessary but it’s good practice to start sampling from the posterior). 
+- We’re working with two parameters here, so the resulting posterior approximation is a multivariate Gaussian, hence why we use the `rmvnorm()` function since we’re not only working with each parameter’s mean and variance, but their covariance as well (in this example the covariance is essentially 0 but that won’t typically be the case).
+
+```{r}
+# install.packages("mvtnorm")
+
+#' Function to perform simple Laplace approximation
+#' @param log_posterior_n Function that returns the log posterior given a vector
+#' of parameter values and observed data.
+#' @param init_points Vector of starting values for parameters.
+#' @param n_samples Number of samples to draw from resulting approximated 
+#' posterior distribution for then visualizing.
+#' @param ... Any additional arguments passed to the log_posterior_fun during 
+#' the optimization.
+#' @return Samples from approximated posterior distribution.
+laplace_approx <- function(log_posterior_fn, init_points, n_samples, ...) {
+  
+  # Use the optim function with the input starting points and function to
+  # evaluate the log posterior to find the mode and curvature with hessian = TRUE
+  # (note that using fnscale = -1 means to maximize). We use the ... here to 
+  # allow for flexible name of the data in log_posterior_fn:
+  fit <- optim(init_points, log_posterior_fn, 
+               # Use the same quasi-Newton optimization method as McElreath's
+               # map function in his rethinking package:
+               method = "BFGS",
+               # using fnscale = -1 means to maximize
+               control = list(fnscale = -1), 
+               # need the hessian for the curvature
+               hessian = TRUE, 
+               # additional arguments for the function we're optimizing
+               ...)
+  
+  # Store the mean values for the parameters and curvature to then generate
+  # samples from the approximated normal posterior given the number of samples
+  # for both of the parameters, returning as a data frame:
+  param_mean <- fit$par
+  # inverse of the negative hessian for the covariance - same as the use 
+  # of the observed information in the intro
+  param_cov_mat <- solve(-fit$hessian)
+  # sample from the resulting joint posterior to get posterior distributions
+  # for each parameter:
+  mvtnorm::rmvnorm(n_samples, param_mean, param_cov_mat) %>%
+    data.frame()
+}
+
+#' Function to calculate log posterior for simple score differential model
+#' @param params Vector of parameter values that are named "mu" and "sigma".
+#' @param score_diff_values Vector of observed score differential values
+score_diff_model <- function(params, score_diff_values) {
+  
+  # Log likelihood:
+  sum(dnorm(score_diff_values, params["mu"], params["sigma"], log = TRUE)) +
+    # plus the log priors results in log posterior:
+    dnorm(params["mu"], 0, 100, log = TRUE) + 
+    dunif(params["sigma"], 0, 200, log = TRUE)
+
+}
+```
+
+With these functions we’ll now approximate the posterior, considering very naive starting values for our optimization with $\mu = 200$ and $\sigma = 10$ (this is just to demonstrate, I have no reason for choosing these values).
+
+```{r}
+init_samples <- laplace_approx(log_posterior_fn = score_diff_model,
+                               init_points = c(mu = 200, sigma = 10),
+                               n_samples = 10000,
+                               # Specify the data for the optimization!
+                               score_diff_values = team_summary_df$Total_Score_Diff)
+```
+
+We can easily view the joint distribution of our posterior samples with their respective marginals on the side (code courtesy of Claus Wilke using cowplot):
+
+```{r}
+# install.packages("cowplot")
+library(cowplot)
+
+# First the joint distribution plot with points for the values:
+joint_plot <- ggplot(init_samples, aes(x = mu, y = sigma)) + 
+  geom_point(alpha = .3, color = "darkblue")  +
+  labs(title = "Posterior distribution for model parameters with marginals") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 16))
+
+# Marginal density for mu along x-axis using the cowplot function axis_canvas:
+mu_dens <- axis_canvas(joint_plot, axis = "x") +
+  geom_density(data = init_samples, aes(x = mu), fill = "darkblue",
+               alpha = 0.5, size = .2)
+
+# Same thing for sigma but along y and with coord_flip = TRUE to make it vertical:
+sigma_dens <- axis_canvas(joint_plot, axis = "y", coord_flip = TRUE) +
+  geom_density(data = init_samples, aes(x = sigma), fill = "darkblue",
+               alpha = 0.5, size = .2) +
+  coord_flip()
+
+# Now generate by adding these objects to the main plot:
+# Need grid:
+# install.packages("grid")
+joint_plot_1 <- insert_xaxis_grob(joint_plot, mu_dens, 
+                                  grid::unit(.2, "null"), position = "top")
+joint_plot_2 <- insert_yaxis_grob(joint_plot_1, sigma_dens, 
+                                  grid::unit(.2, "null"), position = "right")
+ggdraw(joint_plot_2)
+```
+From this we can clearly see the Gaussian approximations for both of our parameters with the distribution of $\mu$ centered around 0 and the distribution for $\sigma$ centered around 100. Remember this represents the distributions for the parameters of our score differential model. So sampling from this posterior means we are generating different Gaussian distributions for the score differential. My next post will focus on sampling from the posterior, but to give you a taste of what I mean the code below uses these 10000 values from `init_samples` for each parameter, and then samples 10000 values from distributions using these combinations of values to give us our approximate score differential distribution.
+
+```{r}
+# R is vectorized so can just give it the vector of values for the Gaussian
+# distribution parameters to create the simulated score-diff distribution:
+sim_score_diff_data <- data.frame(Total_Score_Diff = 
+                                    rnorm(10000, mean = init_samples$mu,
+                                          sd = init_samples$sigma))
+
+# Create the histogram from before but now add this posterior density on top:
+score_diff_hist + geom_density(data = sim_score_diff_data,
+                               aes(x = Total_Score_Diff), 
+                               fill = NA, color = "darkblue")
+```
+
+Not bad, but then again this was a pretty easy example. You could also use the grid approximation from the last post to accomplish the same task but it starts to be annoying to work with even with just two parameters, quickly becoming unbearable with more and more parameters.
+
+
+## How to win in the NFL
+
+I’m going to define two statistics to summarise each team’s performance in a season. These statistics will be entirely based on a team’s expected points added (`EPA`). 
+
+- It’s built on the fundamental principle in football that not all yards are created equal. 
+- A 3 yard rush on 3rd down with 2 yards to go, is a lot more valuable than a 3 yard rush on 3rd down with 15 yards to go. 
+- I’m not going to do a full dive on how to calculate expected points or its history in this post, but it gives us a number describing how many points a team is expected to score given their current situation. 
+- `EPA` is merely the change in this expected points state between two plays. 
+- It was recently popularized by Brian Burke, and in nflscrapR we use a multinomial logistic regression model to provide probabilities for each of the possible scoring events resulting in freely available  `EPA` values for every play, full model details available here.
+
+`https://www.cmusportsanalytics.com/nfl-expected-points-nflscrapr-part-1-introduction-expected-points/`
+
+`https://arxiv.org/abs/1802.00998`
+
+For each combination of team, $t$, and season, $y$, we’ll calculate both its total offensive $EPA$ from passing and rushing as $EPA^{pass}_{off, t, y}$ and $EPA^{rush}_{off, t, y}$ respectively. As well as it’s defensive statistics representing the expected points **allowed**, $EPA^{pass}_{def, t, y}$ and $EPA^{rush}_{def, t, y}$. We’ll capture the efficiency of their performances by dividing these totals each by their respective number of attempts, which we’ll denote as $Att^{rush}_{off, t, y}, Att^{rush}_{def, t, y}, Att^{pass}_{off, t, y}, Att^{pass}_{def, t, y}$
+
+Finally, we’ll summarise their overall performances with differentials between their offensive and defensive efficiency stats for both passing and rushing:
+
+$$
+EPA \: diff^{pass}_{t,y} = \frac{EPA^{pass}_{off, t, y}}{Att^{pass}_{off, t, y}} - \frac{EPA^{pass}_{def, t, y}}{Att^{pass}_{def, t, y}} \\
+EPA \: diff^{rush}_{t,y} = \frac{EPA^{rush}_{off, t, y}}{Att^{rush}_{off, t, y}} - \frac{EPA^{rush}_{def, t, y}}{Att^{rush}_{def, t, y}}
+$$
+
+These two stats tell us effectively tell us how much more efficient a team’s passing (rushing) offense was compared to their opponents. We’re then going to look at the relationship between score differential and each of these efficiency differentials separately for simplicity to give us a sense of knowing which is more related to their overall performance as captured by score differential. First let’s get this data and join it to our team_summary_df above by grabbing and selecting the columns from my nflscrapR-data repository:
+
+```{r}
+# Load in the four datasets summarising team performance for passing and rushing
+# both from offensive and defensive perspectives, selecting only the necessary
+# columns and renaming them:
+
+team_passing_off <- read_csv("https://raw.githubusercontent.com/ryurko/nflscrapR-data/master/legacy_data/season_team_stats/team_season_passing_df.csv") %>%
+  dplyr::select(Season, Team, EPA_per_Att) %>%
+  rename(pass_epa_att_off = EPA_per_Att) %>%
+  filter(!is.na(Team))
+
+team_passing_def <- read_csv("https://raw.githubusercontent.com/ryurko/nflscrapR-data/master/legacy_data/season_team_stats/team_def_season_passing_df.csv") %>%
+  dplyr::select(Season, Team, EPA_per_Att) %>%
+  rename(pass_epa_att_def = EPA_per_Att) %>%
+  filter(!is.na(Team))
+
+team_rushing_off <- read_csv("https://raw.githubusercontent.com/ryurko/nflscrapR-data/master/legacy_data/season_team_stats/team_season_rushing_df.csv") %>%
+  dplyr::select(Season, Team, EPA_per_Car) %>%
+  rename(rush_epa_att_off = EPA_per_Car) %>%
+  filter(!is.na(Team))
+
+team_rushing_def <- read_csv("https://raw.githubusercontent.com/ryurko/nflscrapR-data/master/legacy_data/season_team_stats/team_def_season_rushing_df.csv") %>%
+  dplyr::select(Season, Team, EPA_per_Car) %>%
+  rename(rush_epa_att_def = EPA_per_Car) %>%
+  filter(!is.na(Team))
+
+# Join the data to the team_summary_df and calculate the differential columns:
+
+team_summary_df <- team_summary_df %>%
+  inner_join(team_passing_off, by = c("Team", "Season")) %>%
+  inner_join(team_passing_def, by = c("Team", "Season")) %>%
+  inner_join(team_rushing_off, by = c("Team", "Season")) %>%
+  inner_join(team_rushing_def, by = c("Team", "Season")) %>%
+  mutate(pass_epa_diff = pass_epa_att_off - pass_epa_att_def,
+         rush_epa_diff = rush_epa_att_off - rush_epa_att_def)
+```
+
+Next, let’s look at the relationship between each of these efficiency differentials with the team’s score differential visually along with simple linear regression fits (just for assistance, we’re going into Bayesian linear regression anyway):
+
+```{r}
+epa_pass_plot <- ggplot(team_summary_df,
+                        aes(x = pass_epa_diff, y = Total_Score_Diff)) +
+  geom_point(alpha = 0.5, color = "darkblue") +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Passing EPA/Attempt differential",
+       y = "Regular season score differential",
+       title = "Relationship between score differential\nand passing efficiency differential") +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 13))
+
+epa_rush_plot <- ggplot(team_summary_df,
+                        aes(x = rush_epa_diff, y = Total_Score_Diff)) +
+  geom_point(alpha = 0.5, color = "darkblue") +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Rushing EPA/Attempt differential",
+       y = "Regular season score differential",
+       title = "Relationship between score differential\n and rushing efficiency differential") +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 13))
+
+plot_grid(epa_pass_plot, epa_rush_plot, rel_widths = c(1, 1))
+```
+
+Ok, I’d say it’s pretty obvious that the passing efficiency differential has a strong positive relationship with score differential. The rushing differential also displays a positive relationship, but not quite as strong. We can also of course view the relationship between these variables (or lack thereof), and color the points by the team’s regular season score differential to give us an idea of how its related to both of these variables. And just because we can, we’ll include the marginal distributions on the same plot.
+
+```{r}
+# First generate the scattterplot with the points
+joint_score_plot <- ggplot(team_summary_df,
+       aes(x = pass_epa_diff, y = rush_epa_diff)) +
+  geom_point(aes(color = Total_Score_Diff), alpha = 0.5, size = 4) +
+  labs(x = "Passing EPA/Attempt differential",
+       y = "Rushing EPA/Attempt differential",
+       color = "Regular season\nscore differential",
+       title = "Joint distribution of passing and rushing efficiency differentials\ncolored by regular season score differential") +
+  # Make the color scale go from darkorange (bad) to midpoint gray (usually 
+  # associate white with missing) to darkblue (good):
+  scale_color_gradient2(low = "darkorange", mid = "gray", high = "darkblue",
+                        midpoint = 0) +
+  # Add dashed red lines through the origin:
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  # Add some text for the different quadrants for ease of reading:
+  annotate("text", label = "Better pass,\nbetter run", x = .30, y = .28,
+           size = 5, color = "darkred") +
+  annotate("text", label = "Better pass,\nworse run", x = .30, y = -.15,
+           size = 5, color = "darkred") +
+  annotate("text", label = "Worse pass,\nbetter run", x = -.30, y = .28,
+           size = 5, color = "darkred") +
+  annotate("text", label = "Worse pass,\nworse run", x = -.30, y = -.15,
+           size = 5, color = "darkred") +
+  theme_bw() + 
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 16))
+
+# Make passing marginal along x axis:
+pass_dens <- axis_canvas(joint_score_plot, axis = "x") +
+  geom_density(data = team_summary_df, aes(x = pass_epa_diff), 
+               fill = "darkblue",
+               alpha = 0.5, size = .2)
+
+# Same thing for rushing but along y and with coord_flip = TRUE to make it vertical:
+rush_dens <- axis_canvas(joint_score_plot, axis = "y", coord_flip = TRUE) +
+  geom_density(data = team_summary_df, aes(x = rush_epa_diff), 
+               fill = "darkblue",
+               alpha = 0.5, size = .2) +
+  coord_flip()
+
+# Now generate by adding these objects to the main plot:
+joint_score_plot_1 <- insert_xaxis_grob(joint_score_plot, pass_dens, 
+                                  grid::unit(.2, "null"), position = "top")
+joint_score_plot_2 <- insert_yaxis_grob(joint_score_plot_1, rush_dens, 
+                                  grid::unit(.2, "null"), position = "right")
+ggdraw(joint_score_plot_2)
+```
+ 
+Now it looks pretty clear that you’re probably going to need a better passing offense than your opponent to have a positive score differential. There doesn’t appear to be many points on this plot with positive score differential in the top-left quadrant, which corresponds to rushing better than your opponents but having an inferior passing game. After accounting for the passing efficiency differential, maybe a team’s rushing efficiency differential doesn’t matter? Let’s tackle this with a Bayesian model.
+
+Returning to the score differential model, we’re now going use both efficiency differentials as predictors. Remember, all we need to fully describe a Gaussian distribution is the mean and variance. So in order to incorporate these into the our model we’ll define the mean, $\mu$, as a function of both predictors explicitly. For simplicity we’ll return to using $i$ to denote a single combination of team $t$ and season $y$ for the 286 team-season combinations that we have, and we'll also let $P_{i} = EPA \: diff^{pass}_{t,y}$ be simpler representations for our differentials:
+
+$$
+S_{i} \sim N(\mu_{i}, \sigma^{2}) \\
+\mu_{i} = \alpha + \beta_{P}P_{i} + \beta_{R}R_{i} \\
+\alpha \sim N(0, 100^{2}) \\
+\beta_{P} \sim N(0, 100^{2}) \\
+P_{i} \sim N(0, 100^{2}) \\
+\sigma \sim Uniform(0, 200)
+$$
+
+- Now the mean of the score differential distribution depends on the predictors as denoted with the subscript $i$. 
+- By denoting the relationship between $\mu_{i}$ and each of the predictors with an = sign, we’re saying that $\mu_{i}$ is no longer a parameter, its just a function of our actual parameters of interest. 
+- The parameters we really care about here are $\alpha, \beta_{P}$, and $\beta_{R}$.
+- Of course all of this should look familiar if you’ve seen linear regression before. 
+- The $\alpha$ is our model’s intercept, representing the expected score differential for when both the passing and rushing efficiency differentials are 0. 
+- And each of the $\beta$s represent the change in expected score differential when the pass/rush efficiency differential increases by 1 unit, after accounting for the other type of efficiency differential (rush/pass). 
+- So each of these are given priors (along with $\sigma$ again), and we don’t need to specify a prior for $\mu_{i}$ since it is explained completely by these parameters. 
+- These priors for now are pretty weak, but both $\beta$ priors centered at 0 are just saying, “I don’t know if there’s a relationship between these effiency differentials and score differential, good or bad are equally likely”.
+
+To actually approximate this model, we’ll use that same `laplace_approx()` function from before - but this time define a new function for calculating the log posterior for this regression model:
+
+```{r}
+#' Function to calculate log posterior for score differential model regression
+#' model that also takes in the prior inputs for the regression parameters.
+#' @param reg_params Vector of parameter values that are named "alpha", 
+#' "beta_p", "beta_r", and "sigma".
+#' @param hyperparams List of hyperparameter values that are named "alpha_mu",
+#' "alpha_sd", "beta_p_mu", "beta_p_sd", "beta_r_mu", "beta_p_sd", "sigma_a",
+#' and "sigma_b".
+#' @param score_diff_values Vector of observed score differential values.
+#' @param pass_eff_values Vector of pass efficiency differential values.
+#' @param rush_eff_values Vector of rush efficiency differential values.
+
+score_diff_reg_eff_model <- function(reg_params, hyperparams, 
+                                        score_diff_values, pass_eff_values,
+                                        rush_eff_values) {
+  # Log likelihood that now uses the function form for mu using the two
+  # predictors and their respective values:
+  sum(dnorm(score_diff_values, 
+            reg_params["alpha"] + 
+              reg_params["beta_p"]*pass_eff_values +
+              reg_params["beta_r"]*rush_eff_values, 
+            reg_params["sigma"], log = TRUE)) +
+    # plus the log priors for each parameter results in log posterior:
+    dnorm(reg_params["alpha"], 
+          hyperparams$alpha_mu, hyperparams$alpha_sd, log = TRUE) + 
+    dnorm(reg_params["beta_p"], 
+          hyperparams$beta_p_mu, hyperparams$beta_p_sd, log = TRUE) + 
+    dnorm(reg_params["beta_r"], 
+          hyperparams$beta_r_mu, hyperparams$beta_r_sd, log = TRUE) + 
+    dunif(reg_params["sigma"], hyperparams$sigma_a, 
+          hyperparams$sigma_b, log = TRUE)
+
+}
+```
+
+Now we’ll just optimize this function in the same way as before, using the hyperparameters in the model outlined above, and generate 10000 samples from the resulting multivariate Gaussian posterior distribution:
+
+```{r}
+init_reg_samples <- laplace_approx(log_posterior_fn = score_diff_reg_eff_model,
+                               init_points = c(alpha = 0, beta_p = 0, 
+                                               beta_r = 0, sigma = 10),
+                               n_samples = 10000,
+                               # Vector of hyperparameters:
+                               hyperparams = list(alpha_mu = 0, alpha_sd = 100,
+                                                beta_p_mu = 0, beta_p_sd = 100,
+                                                beta_r_mu = 0, beta_r_sd = 100,
+                                                sigma_a = 0, sigma_b = 200),
+                               # Specify the data for the optimization!
+                               score_diff_values = team_summary_df$Total_Score_Diff,
+                               pass_eff_values = team_summary_df$pass_epa_diff,
+                               rush_eff_values = team_summary_df$rush_epa_diff)
+```
+Now let’s view the distributions for each $\beta$ using another one of Claus Wilke’s packages ggridges:
+
+```{r}
+# We'll use the latex2exp package here:
+# install.packages("latex2exp")
+library(latex2exp)
+# and ggridges:
+# install.packages("ggridges") 
+library(ggridges)
+
+# First use the gather function to make this simpler to work with:
+init_reg_samples %>%
+  gather(param, value) %>%
+  # only use the beta parameters:
+  filter(param %in% c("beta_p", "beta_r")) %>%
+  # visualize the distributions for each with density curves:
+  ggplot(aes(x = value, y = param)) +
+  geom_density_ridges(alpha = 0.7, fill = "darkblue",
+                      # add the rugs underneath as well:
+                      jittered_points = TRUE,
+                      position = position_points_jitter(width = 0.05, height = 0),
+                      point_shape = '|', point_size = 3, point_color = "darkblue",
+                      point_alpha = 0.7) +
+  # properly label and also change the y axis spacing so the Passing density
+  # is along the bottom of the axis
+  scale_y_discrete(labels = c("Passing", "Rushing"), expand = c(0.01, 0.01)) +
+  # label using the latex symbols:
+  labs(x = TeX("$\\beta$ value"),
+       y = TeX("$\\beta$ parameter"),
+       title = TeX("Sampled posterior distributions for $\\beta_P$ and $\\beta_R$")) +
+  # theme settings:
+  theme_bw() + 
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 14))
+```
+
+- From this we can clearly see that both passing and rushing efficiency differentials have positive relationships with score differential, even while accounting for each other. 
+- Unlike my initial guess from the previous plot, improving your rushing efficiency differential is associated with an increase in your team’s score differential even after adjusting for passing - so it’s not entirely useless. 
+- But we do see that passing has a greater effect, in fact **there’s no overlap between the passing and rushing distributions**. 
+- Now these $\beta$ values are quite large due to the actual values for the $EPA/Att$ differentials, with the medians for $\beta_{P}$ and $\beta_{R}$ at 490.521 and 315.542 respectively. 
+- To make this simpler and more realistic from point of view of gaining an advantage: a 0.05 increase in a team’s passing $EPA/Att$ differential is associated with a 24.526 increase in their expected score differential (using the posterior distribution median). 
+- Meanwhile a 0.05 increase in a team’s rushing $EPA/Att$ differential is associated with a 15.7771 increase in their expected score differential. 
+- So if you’re in a front office and wondering how to allocate your resources, improving your pass offense/defense is more worthwhile than improving in your run offense/defense.
+
+## But my prior says run the ball!
+
+I completely glossed over the prior distributions in setting up this model. The ones I used above are really weak priors, that give you results pretty close to just using good old `lm()` for your standard linear regression. Also, the prior I’m using for $\sigma$ is extremely naive, a more appropriate choice is to actually model the log($\sigma$) instead with a Gaussian prior then exponeniate to get strictly positive values - but I’ll let the motivated reader adjust this. Instead I’m going to conclude this post with an example of the power of prior distributions.
+
+Let’s pretend you’re an analyst for the Seattle Seahawks. Your team has just hired Brian Schottenheimer to be the offensive coordinator. Brian loves to run the football, in fact he tells you that from his 20 years of professional coaching experience, he knows that the run game is much more important than the passing game. So how do we account for his prior knowledge (or to be blunt, his bias)?
+
+A pretty cool feature from using the Gaussian distribution as a prior is how the variance represents the amount of previous data from using $\sigma = \frac{1}{\sqrt{n}}$. Given Brian’s 20 years of professional experience, this equates to using in our priors = 0.2236, which is obviously much smaller than the priors from above. We’ll also specify the $\mu$ for each of the $\beta$s to say that rushing has a stronger relationship than passing, by just flipping our posterior median values in the example above:
+
+$$
+S_{i} \sim N(\mu_{i}, \sigma^{2}) \\
+\mu_{i} = \alpha + \beta_{P}P_{i} + \beta_{R}R_{i} \\
+\alpha \sim N(0, 100^{2}) \\
+\beta_{P} \sim N(336, 0.2236^{2}) \\
+P_{i} \sim N(492, 0.2236^{2}) \\
+\sigma \sim Uniform(0, 200)
+$$
+
+Let’s use our functions from before and visualize the new posteriors given Brian’s prior beliefs:
+
+```{r}
+brian_reg_samples <- laplace_approx(log_posterior_fn = score_diff_reg_eff_model,
+                               init_points = c(alpha = 0, beta_p = 0, 
+                                               beta_r = 0, sigma = 10),
+                               n_samples = 10000,
+                               # Vector of hyperparameters:
+                               hyperparams = list(alpha_mu = 0, alpha_sd = 100,
+                                                beta_p_mu = 336, beta_p_sd = 0.2236,
+                                                beta_r_mu = 492, beta_r_sd = 0.2236,
+                                                sigma_a = 0, sigma_b = 200),
+                               # Specify the data for the optimization!
+                               score_diff_values = team_summary_df$Total_Score_Diff,
+                               pass_eff_values = team_summary_df$pass_epa_diff,
+                               rush_eff_values = team_summary_df$rush_epa_diff)
+
+# First use the gather function to make this simpler to work with:
+brian_reg_samples %>%
+  gather(param, value) %>%
+  # only use the beta parameters:
+  filter(param %in% c("beta_p", "beta_r")) %>%
+  # visualize the distributions for each with density curves:
+  ggplot(aes(x = value, y = param)) +
+  geom_density_ridges(alpha = 0.7, fill = "darkblue",
+                      # add the rugs underneath as well:
+                      jittered_points = TRUE,
+                      position = position_points_jitter(width = 0.05, height = 0),
+                      point_shape = '|', point_size = 3, point_color = "darkblue",
+                      point_alpha = 0.7) +
+  # properly label and also change the y axis spacing so the Passing density
+  # is along the bottom of the axis
+  scale_y_discrete(labels = c("Passing", "Rushing"), expand = c(0.01, 0.01)) +
+  # label using the latex symbols:
+  labs(x = TeX("$\\beta$ value"),
+       y = TeX("$\\beta$ parameter"),
+       title = TeX("Sampled posterior distributions for $\\beta_P$ and $\\beta_R$ accounting for Brian's prior")) +
+  # theme settings:
+  theme_bw() + 
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12),
+        plot.title = element_text(size = 14))
+```
+
+- This shouldn’t be a suprise, as those were some very strong priors about the relationships for each of these efficiency differentials. 
+- Priors play an important role in Bayesian data analysis precisely for this reason, they can have a major impact on your results (hence why many people prefer to avoid working with them). 
+- So if you’re that lucky Seahawks analyst that gets to show Brian these results, you’ve just reaffirmed his beliefs - you’ll need a lot more data to move these posterior distributions away from such strong priors.
+
+
+
+## Discussion and next steps
+
+- Laplace approximation is a useful tool that is pretty easy to implement, assuming you’ve met the necessary assumptions. 
+- You’re not just using the mode found from optimization techniques as single estimates, but rather approximating the full posterior distribution with a Gaussian. 
+- And from this score differential example, it’s really easy to implement Bayesian linear regression. 
+- From the football perspective we’ve seen that the ability to pass the football and prevent others from passing is more valuable in terms of score differential than running the ball. 
+- But even with this simple approach, we can quantify in terms of points how much more valuable passing is relative to rushing.
+

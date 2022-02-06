@@ -1,0 +1,66 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Passing Tiers
+
+```{r}
+library(nflplotR)
+library(nflreadr)
+library(tidyverse)
+```
+
+```{r nfl_tiers_df}
+pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
+  dplyr::filter(season_type == "REG") %>%
+  dplyr::filter(!is.na(posteam) & (rush == 1 | pass == 1))
+
+offense <- pbp %>%
+  dplyr::group_by(team = posteam) %>%
+  dplyr::summarise(off_epa = mean(epa, na.rm = TRUE))
+
+defense <- pbp %>%
+  dplyr::group_by(team = defteam) %>%
+  dplyr::summarise(def_epa = mean(epa, na.rm = TRUE))
+
+combined <- offense %>%
+  dplyr::inner_join(defense, by = "team")
+
+qbs <- pbp %>%
+  dplyr::filter(pass == 1 | rush == 1) %>%
+  dplyr::filter(down %in% 1:4) %>%
+  dplyr::group_by(id) %>%
+  dplyr::summarise(
+    name = dplyr::first(name),
+    team = dplyr::last(posteam),
+    plays = dplyr::n(),
+    qb_epa = mean(qb_epa, na.ram = TRUE)
+  ) %>%
+  dplyr::filter(plays > 200) %>%
+  dplyr::slice_max(qb_epa, n = 10)
+```
+
+```{r nfl_tiers_plot}
+nfl_tiers_plot <- ggplot2::ggplot(combined, aes(x = off_epa, y = def_epa)) +
+  ggplot2::geom_abline(slope = -1.5, intercept = seq(0.4, -0.3, -0.1), alpha = .2, colour = "white") +
+  nflplotR::geom_mean_lines(aes(v_var = off_epa , h_var = def_epa)) +
+  nflplotR::geom_nfl_logos(aes(team_abbr = team), width = 0.065, alpha = 0.7) +
+  ggplot2::labs(
+    x = "Offense EPA/play",
+    y = "Defense EPA/play",
+    caption = "Data: @nflfastR",
+    title = "2021 NFL Offensive and Defensive EPA per Play"
+  ) +
+  hrbrthemes::theme_ft_rc() +
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(face = "bold"),
+    plot.title.position = "plot"
+  ) +
+  ggplot2::scale_y_reverse()
+```
+
+```{r}
+nfl_tiers_plot
+```
+

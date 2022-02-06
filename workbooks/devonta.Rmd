@@ -1,0 +1,384 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+pbp <- purrr::map_df(c(2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+})
+
+#to get Devonta's GSID
+pbp %>%
+  filter(posteam == 'PHI') %>%
+  select(receiver, receiver_id, receiver_player_id, receiver_player_name) %>%
+  distinct(receiver_player_name, .keep_all = TRUE)
+```
+
+```{r}
+devonta <- pbp %>%
+  filter(receiver_id == "00-0036912", pass_attempt == 1, season_type == 'REG') %>%
+  select(game_id, complete_pass) %>%
+  group_by(game_id) %>%
+  summarise(
+    receptions = sum(complete_pass, na.rm = TRUE),
+    targets = n(),
+    catch_rate = receptions / targets
+  ) %>%
+  mutate(
+    total_receptions = cumsum(receptions),
+    total_targets = cumsum(targets),
+    total_catch_rate = total_receptions / total_targets,
+    # Columns to be used later:
+    index = 1:n(),
+    game_index = paste("game_", index, sep = ""),
+    game_index = as_factor(game_index)
+    )
+
+#game_index = fct_relevel(factor(game_index),
+#      "game_1", "game_2", "game_3", "game_4", "game_5", "game_6", "game_7", "game_8", "game_9", 
+#      "game_10", "game_11", "game_12", "game_13", "game_14", "game_15", "game_16", "game_17")
+```
+
+```{r}
+p_grid <- seq(from = 0, to = 1, by = 0.05)
+
+prior <- rep(1, 21)
+
+likelihood <- dbinom(
+  x = devonta$receptions[1],
+  size = devonta$targets[1],
+  prob = p_grid)
+
+bayes_numerator <- likelihood * prior
+
+posterior <- bayes_numerator / sum(bayes_numerator)
+```
+
+```{r}
+tibble(p_grid = p_grid, p_posterior = posterior) %>%
+  ggplot(aes(x = p_grid, y = p_posterior)) +
+  geom_point(size = 3, color = "darkblue") +
+  geom_line(color = "darkblue") +
+  # Add a vertical line for JuJu's observed catch rate:
+  geom_vline(
+    xintercept = devonta$catch_rate[1], color = "darkorange",
+    linetype = "dashed", size = 3, alpha = .5
+  ) +
+  # Label!
+  labs(
+    x = "Catch rate", y = "Posterior probability",
+    title = "Posterior approximation for\nDeVonta's catch rate after one game"
+  ) +
+  # Clean it up:
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 10),
+    title = element_text(size = 10)
+  )
+```
+
+```{r}
+# Create a data frame by applying the grid approximation steps to each row
+# of juju_games:
+game_posteriors <- map_dfc(
+  c(1:nrow(devonta)),
+  function(x) {
+    p_grid <- seq(from = 0, to = 1, by = .05)
+    prior <- rep(1, 21)
+    likelihood <- dbinom(
+      x = devonta$total_receptions[x],
+      size = devonta$total_targets[x],
+      prob = p_grid
+    )
+    bayes_numerator <- likelihood * prior
+    posterior <- bayes_numerator / sum(bayes_numerator)
+    # Return this as a data frame:
+    result <- data.frame(posterior)
+    colnames(result) <- paste("game_", x, sep = "")
+    return(result)
+  }
+)
+```
+
+
+```{r}
+# Join these columns with p_grid and column for the prior probability:
+data.frame(p_grid = p_grid, prior = rep(1 / 21, 21)) %>%
+  bind_cols(game_posteriors) %>%
+  # Gather the columns so the data is long, one row for each week and grid value
+  gather(key = "game_index", value = "posterior_prob", -p_grid) %>%
+  # Relevel the game_index variable:
+  mutate(game_index = fct_relevel(
+    factor(game_index),
+    "prior", "game_1", "game_2", "game_3",
+    "game_4", "game_5", "game_6", "game_7", 
+    "game_8", "game_9", "game_10", "game_11", 
+    "game_12", "game_13", "game_14", "game_15",
+    "game_16", "game_17"
+  )) %>%
+  # Visualize the posteriors for each game:
+  ggplot(aes(x = p_grid, y = posterior_prob)) +
+  geom_point(size = 2, color = "darkblue") +
+  geom_line(color = "darkblue") +
+  facet_wrap(~game_index) +
+  # Add vertical lines for each cumulative observed rate
+  geom_vline(
+    data = devonta,
+    aes(xintercept = total_catch_rate), color = "darkorange",
+    linetype = "dashed", size = 1, alpha = .5
+  ) +
+  geom_text(
+    data = devonta, size = 3,
+    x = .25, y = .3, aes(label = paste("Caught",
+      receptions, "of",
+      targets,
+      sep = " "
+    ))
+  ) +
+  # Label!
+  labs(
+    x = "Catch rate", y = "Posterior probability",
+    title = "Posterior approximation for DeVonta's catch rate after each game"
+  ) +
+  # Clean it up:
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 6),
+    title = element_text(size = 10)
+  )
+```
+
+```{r}
+rosters <- read_rds("~/Documents/nfl/data/roster/roster_2020.rds")
+
+prior_stats <- read_rds("~/Documents/nfl/data/player_stats/player_stats_2020.rds") %>%
+  dplyr::left_join(select(rosters, position, gsis_id), by = c("player_id" = "gsis_id")) %>%
+  filter(position == 'WR') %>%
+  group_by(player_id) %>%
+  summarise(
+    receptions = sum(receptions, na.rm = TRUE),
+    targets = sum(targets, na.rm = TRUE), 
+    catch_rate = receptions / targets
+  ) %>%
+  left_join(select(prior_stats1, player_name, player_id)) %>%
+  distinct(player_id, .keep_all = TRUE) %>%
+  select(-player_id) %>%
+  relocate(player_name, .before = receptions) %>%
+  filter(targets >= 25)
+```
+
+```{r}
+prior_stats %>%
+  ggplot(aes(x = catch_rate)) +
+  geom_density(color = "darkblue") +
+  geom_rug(color = "darkblue") +
+  theme_bw() +
+  labs(
+    x = "Catch rate", y = "Density",
+    title = "Distribution of WR catch rates in 2020 (minimum 25 targets)"
+  )
+```
+
+```{r}
+# Use the fitdistr function from the MASS library:
+prior_beta_model <- MASS::fitdistr(prior_stats$catch_rate, dbeta,
+  start = list(shape1 = 10, shape2 = 10)
+)
+
+# Extract the approximated  priors
+alpha0 <- prior_beta_model$estimate[1]
+beta0 <- prior_beta_model$estimate[2]
+```
+
+```{r}
+# Create a data frame by applying the grid approximation steps to each row
+# of juju_games:
+new_game_posteriors <- map_dfc(
+  c(1:nrow(devonta)),
+  function(x) {
+    p_grid <- seq(from = 0, to = 1, by = .05)
+    prior <- dbeta(p_grid, alpha0, beta0)
+    likelihood <- dbinom(
+      x = devonta$total_receptions[x],
+      size = devonta$total_targets[x],
+      prob = p_grid
+    )
+    bayes_numerator <- likelihood * prior
+    posterior <- bayes_numerator / sum(bayes_numerator)
+    # Return this as a data frame:
+    result <- data.frame(posterior)
+    colnames(result) <- paste("game_", x, sep = "")
+    return(result)
+  }
+)
+```
+
+```{r}
+# Join these columns with p_grid and column for the prior probability:
+data.frame(
+  p_grid = p_grid,
+  prior = dbeta(p_grid, alpha0, beta0) / sum(dbeta(p_grid, alpha0, beta0))
+) %>%
+  bind_cols(new_game_posteriors) %>%
+  # Gather the columns so the data is long, one row for each week and grid value
+  gather(key = "game_index", value = "posterior_prob", -p_grid) %>%
+  # Relevel the game_index variable:
+  mutate(game_index = fct_relevel(
+    factor(game_index),
+    "prior", "game_1", "game_2", "game_3",
+    "game_4", "game_5", "game_6", "game_7",
+    "game_8", "game_9", "game_10", "game_11",
+    "game_12", "game_13", "game_14", "game_15",
+    "game_16", "game_17"
+  )) %>%
+  # Visualize the posteriors for each game:
+  ggplot(aes(x = p_grid, y = posterior_prob)) +
+  geom_point(size = 2, color = "darkblue") +
+  geom_line(color = "darkblue") +
+  facet_wrap(~game_index) +
+  # Add vertical lines for each cumulative observed rate
+  geom_vline(
+    data = devonta,
+    aes(xintercept = total_catch_rate), color = "darkorange",
+    linetype = "dashed", size = 1, alpha = .5
+  ) +
+  geom_text(
+    data = devonta, size = 3,
+    x = .25, y = .3, aes(label = paste("Caught",
+      receptions, "of",
+      targets,
+      sep = " "
+    ))
+  ) +
+  # Label!
+  labs(
+    x = "Catch rate", y = "Posterior probability",
+    title = "Posterior approximation for DeVonta's catch rate after each game"
+  ) +
+  # Clean it up:
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 6),
+    title = element_text(size = 10)
+  )
+```
+
+```{r}
+# Join these columns with p_grid and column for the prior probability:
+data.frame(
+  p_grid = p_grid,
+  prior = dbeta(p_grid, alpha0, beta0) / sum(dbeta(p_grid, alpha0, beta0))
+) %>%
+  bind_cols(new_game_posteriors) %>%
+  # Gather the columns so the data is long, one row for each week and grid value
+  gather(key = "game_index", value = "posterior_prob", -p_grid) %>%
+  # Relevel the game_index variable:
+  mutate(game_index = fct_relevel(
+    factor(game_index),
+    "prior", "game_1", "game_2", "game_3",
+    "game_4", "game_5", "game_6", "game_7",
+    "game_8", "game_9", "game_10", "game_11",
+    "game_12", "game_13", "game_14", "game_15",
+    "game_16", "game_17"
+  )) %>%
+  # Visualize the posteriors for each game:
+  ggplot(aes(x = p_grid, y = posterior_prob)) +
+  geom_point(size = 2, color = "darkblue") +
+  geom_line(color = "darkblue") +
+  facet_wrap(~game_index, scales = "free_x") +
+  # Add vertical lines for each cumulative observed rate
+  geom_vline(
+    data = devonta,
+    aes(xintercept = total_catch_rate), color = "darkorange",
+    linetype = "dashed", size = 1, alpha = .5
+  ) +
+  geom_text(
+    data = devonta, size = 3,
+    x = .25, y = .3, aes(label = paste("Caught",
+      receptions, "of",
+      targets,
+      sep = " "
+    ))
+  ) +
+  # Label!
+  labs(
+    x = "Catch rate", y = "Posterior probability",
+    title = "Posterior approximation for DeVonta's catch rate after each game"
+  ) +
+  # Clean it up:
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 6),
+    title = element_text(size = 10)
+  )
+```
+
+```{r}
+# Compuate the known posterior for 1000 points from 0 to 1:
+known_posterior <- data.frame(
+  p_density = dbeta(
+    seq(0, 1, length.out = 1000),
+    # Add receptions to prior alpha
+    devonta$total_receptions[nrow(devonta)] + alpha0,
+    # Add incompletions to prior beta
+    with(
+      devonta,
+      (total_targets[nrow(devonta)] -
+        total_receptions[nrow(devonta)]) + beta0
+    )
+  ),
+  p_grid = seq(0, 1, length.out = 1000)
+) %>%
+  ggplot(aes(x = p_grid, y = p_density)) +
+  geom_line(color = "darkorange") +
+  # Label!
+  labs(
+    x = "Catch rate", 
+    y = "Posterior density",
+    title = "Known posterior distribution using beta prior"
+  ) +
+  # Clean it up:
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 10),
+    title = element_text(size = 10)
+  )
+```
+
+```{r}
+grid_posterior <- new_game_posteriors %>%
+  select(game_13) %>%
+  bind_cols(data.frame(p_grid = p_grid)) %>%
+  ggplot(aes(x = p_grid, y = game_13)) +
+  geom_point(size = 2, color = "darkblue") +
+  geom_line(color = "darkblue") +
+  # Label!
+  labs(
+    x = "Catch rate", y = "Posterior probability",
+    title = "Grid approximation"
+  ) +
+  # Clean it up:
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 10),
+    title = element_text(size = 10)
+  )
+```
+
+```{r}
+cowplot::plot_grid(known_posterior, grid_posterior)
+```
+
+
+
+

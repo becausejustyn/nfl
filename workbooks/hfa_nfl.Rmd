@@ -1,0 +1,289 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Calculating HFA for NFL the Easy Way
+
+```
+#https://www.sportsbook.football/calculating-hfa-in-the-nfl-with-r-and-the-tidyverse/
+```
+
+We are going to come up with a number for home field advantage (pretend we don't already know that 3 points is a pretty solid estimate).
+
+A quick overview of the code below:
+
+1. file.path creates a path to a file or directory in a platform indepenent way. ~ on a mac is shorthand for your home directory
+2. dir lists all the files in the directory passed to it. We have it return only files with 'GAME' in it (one in this case), and return the full path to the file.
+
+```{r}
+library(tidyverse)
+nfl <- read_csv("~/Documents/Github/nfl/workbooks/GAME.csv")
+
+nfl %>% glimpse()
+```
+
+Now that we have the NFL data loaded up and took a `glimpse()` of it we can begin to calculate HFA for different teams and time frames.
+
+The nfl dataset goes back to 2000 and up through 2017. Currently the NFL has 32 teams its been that way since 2002. Because of that we will filter out the first two seasons of the nfl dataset so we can compare "apples to apples."
+
+```{r} 
+nfl <- filter(nfl, seas >= 2002)
+```
+
+Also, the Rams decided to move to LA. This really screws with our records. Normally I'd change any "STL" record to "LA" because we're still dealing with the same team. But in this case where the focus is location I've decided to leave as is.
+
+## Removing Super Bowl games
+
+We need to make a few more choices before we begin. With rare exceptions NFL teams don't play on a neutral field meaning one of the two teams is at home. The biggest exception to this rule is the Super Bowl. Therefore Super Bowl results need to be filtered out of the dataframe.
+
+The nfl dataframe contains a column wk which stands for week. Looking at the unique values we can isolate the week of the Super Bowl (in theory it should be the last week). It's also important to see if the dataset contains pre-season games or not, if the data has pre-season those games should be fitered out. Our nfl data doesn't have pre-season.
+
+```{r}
+unique(nfl$wk)
+```
+
+Week 21 should be the Super Bowl each season so if the dataframe is filtered on wk 21 we should see the Super Bowl matchups for the past 16 years. My memory isn't great so we will arrange the dataframe so that the most recent games are on top.
+
+```{r}
+nfl %>% 
+  filter(wk == 21) %>% 
+  arrange(desc(seas)) %>% 
+  select(seas, wk, v, h)
+```
+
+Looking at the list confirms that wk 21 is the Super Bowl. Going forward that week will be filtered out of all calculations.
+
+```{r} 
+nfl <- filter(nfl, wk != 21)
+```
+
+The next choice is whether or not to include playoff games. A case can be made for either side of this issue but this isn't the place for that discussion. We will include playoff games in the calculations. If we decide to run the calculations again without playoff games we'd filter out everything above week 17.
+Neutral Field Games
+
+There's one last problem that needs to be dealt with if we're concerned with accurate numbers, international games. Since 2007 the NFL has played a number of regular season games outside the United States. Most of these games have been played at Wembley Stadium in London but a few have been played at Twickenham, London or Estadio Azteca in Mexico City. None of these games can be considered a "home" game for either team regardless of what color shirt they wear. The Bills played a series of games in Toronto from 2008 to 2012, these remove these. The dataset has a column stad. Filter out the games played in these stadiums.
+
+```{r}
+nfl <- nfl %>% 
+  filter(!stad %in% c("Azteca Stadium", 
+                      "Wembley Stadium", 
+                      "Rogers Centre",
+                      "Twickenham, London"))
+```
+
+
+Now, there's probably a game or two that was played on a neutral field that we aren't catching. A game got rescheduled, a natural disaster, etc. That might have a small impact when looking at HFA on a per team basis but in the overall picture it shouldn't matter much now that we have removed that 25 or so games on a neutral site.
+
+After taking out all of those games, what's the average HFA considering all teams since the 2000 season?
+
+There's a few ways to calculate home field advantage.
+
+The most logical way is to add up all the home scores and add up all the visitor scores. Subtract the visitor sum from the home sum and divide that number by the total number of games.
+
+```{r}
+(sum(nfl$ptsh) - sum(nfl$ptsv)) / dim(nfl)[1]
+
+summarise(nfl, diff = sum(ptsh - ptsv) / length(ptsh))
+```
+
+We can get the same answer creating a margin of victory column for each game, which we will call h_mov and then take the mean of the mov column.
+
+```{r}
+nfl %>% 
+  mutate(h_mov = ptsh - ptsv) %>% 
+  summarise(hfa = mean(h_mov)) %>% 
+  pull(hfa)
+```
+
+
+Over the last 14 years the average HFA is approximately 2.6 points. Has the NFL changed in the last few years? Does the HFA hold steady?
+
+One thing we can do is to look at the HFA per season and see if anything has changed over time.
+
+```{r}
+(hfa_by_yr <- nfl %>% 
+  mutate(h_mov = ptsh - ptsv) %>% 
+  group_by(seas) %>% 
+  summarise(hfa = round(mean(h_mov),2)) %>% 
+  ungroup()) %>% 
+  knitr::kable()
+```
+
+Sometimes it's hard to see trends just looking at a table of numbers.
+
+```{r}
+hfa_by_yr %>% 
+  ggplot(., aes(as.factor(seas), hfa)) +
+    geom_bar(stat = "identity", 
+             fill = "azure3", 
+             col = "white") +
+    labs(x = "Season", 
+         y = "Home Field Advantage") +
+    scale_x_discrete(breaks = seq(2000,2015,3)) +
+    scale_y_continuous(breaks = seq(0,4,.5)) +
+    theme_minimal()
+```
+
+NFL HFA by Season
+
+The HFA looks like it jumps around quite a bit with a low of below one point in 2006 and over three and a half points in 2003. 2015 was a below average year with the HFA registering slightly below one and a half points but 2016 jumps back to the global average. A case could be made that the last five seasons have seen a decline in the value of HFA but it's still a little too early to tell.
+
+Small Detour: Here's an example of how easy it is to create "trends" by cherry picking start and end dates.
+
+```{r}
+hfa_by_yr %>% 
+  filter(seas > 2010) %>% 
+  ggplot(aes(seas, hfa)) +
+    geom_point() +
+    geom_smooth(method = "lm", 
+                se = FALSE) +
+    theme_minimal()
+```
+
+
+NFL HFA faux-trend
+
+Using the graph above you can make the case that HFA is becoming less of a factor in the NFL, while the truth is it's pretty stable.
+
+## That's Not Home Field Advantage
+
+At first glance while it might make sense to calculate home field advantage using the above method it's not the correct way to do so. Getting to a solid HFA number isn't as easy as we made it look above.
+
+One question we need to ask is what is home field advantage. At the most simple level it is the advantage in win probability (which we convert into points) that a team gets while playing on their home field. This might sound simplistic but it's home field advantage because teams tend to perform better at home then on the road.
+
+Imagine an idealized game where both teams are evenly matched. The expectation is that if they were to play 1000 games on a neutral field each team would win 500 times. What happens if we take the game from the neutral field to either team's home field? Based on past NFL performance we would expect the home team to win by roughly three points. That's home field advantage. Since teams are rarely evenly matched it's not as easy as saying the home team will win by three points. Ultimatley, we are concerned with HFA impact on betting therefore let's look at how HFA effect the point spread.
+An Example:
+
+The Dolphins are playing the Saints. On a neutral field we would make the Saints a four point favorite (again meaning that if the Saints and Dolphins played 1000 times on a neutral field we'd expect the Saints on average to win by four points).
+
+Imagine two games one where the Saints are at home and the other where the Dolphins are the home team.
+
+home team = bottom team
+Team 	Spread 	Team 	Spread
+Dolphins 	+ 7 		
+Saints 	- 7 		
+Saints 	-1 		
+Dolphins 	+1 		
+
+The tables above show how home field impact betting lines. The neutral field line is Saints -4. If we accept the average HFA in the NFL is approximately 3 points then when the Saints are home they should win by seven points. However, when the game is played in Miami the Dolphins should perform better and the line is Saints minus one. That's a six point swing from one location to another.
+
+Now we will see another way to calculate home field advantage and do it by team.
+
+## HFA by Team
+
+Is HFA uniform across teams? Some teams play better than others at home to determine which teams have the biggest HFA we need to calculate some statistics.
+
+## What do we need to come up with the HFA per team?
+
+- at home margin of victory (mov)
+- road mov
+- league average HFA
+
+Unfortunate for us, the dataset we're working with isn't in a suitable format to calculate those numbers. This means we're going to have to do some data wrangling and tidying before we can come up with a HFA per team.
+
+Below is the code that generates HFA per team since 2002 thru 2016. It doesn't pre-season, international, or neutral site games (or at least we try not to include theme).
+
+First we create a small helper function to view the biggest and smallest home field advantage by team. Below the code and output we will go over each line and see how to both wrangle the data and calculate the HFA.
+
+Before we do that let's to a peak at the dataset
+
+```{r}
+nfl %>% 
+  glimpse()
+```
+
+
+Here's our helper function to view both the top and bottom results at the same time.
+
+```{r}
+top_and_bottom <- function(.df, top = 5, bottom = 5) {
+  .df %>%
+    filter(row_number() <= top | row_number() > (n() - bottom))
+}
+# make sure the dataframe passed to top_and_bottom is sorted
+```
+
+Now we will calculate HFA by team. The five teams with the biggest and five teams with the smallest HFA are shown in the table output below the code.
+
+```{r}
+hfa_by_team <- nfl %>%
+  gather(location, team, c(h, v)) %>%
+  mutate(mov_h = ptsh - ptsv) %>%
+  group_by(team, location) %>%
+  summarise(mov_avg = mean(mov_h)) %>%
+  ungroup() %>%
+  mutate(mov_avg = ifelse(location == "v",
+    mov_avg * -1, mov_avg
+  )) %>%
+  spread(location, mov_avg) %>%
+  mutate(
+    mov_spread = round(h, 2) - round(v, 2),
+    hfa = round(mov_spread / 2, 1)
+  ) %>%
+  arrange(desc(hfa)) %>%
+  select(team, hfa)
+
+top_and_bottom(hfa_by_team) %>% 
+  knitr::kable()
+```
+
+Often it's easier to get a feel for numbers by plotting them rather than looking at a table. note: The plot below might seem strange to some since they're used to seeing such data displayed in barcharts. While the barchart works for this data, IMO visually it's overkill. Simple dots along a number line aligning with the team gets the point across (pun is on purpose) while spilling less ink.
+
+```{r}
+hfa_avg <- mean(hfa_by_team$hfa)
+hfa_by_team %>%
+  ggplot(., aes(reorder(team, hfa), hfa)) +
+  geom_point(col = "slateblue3", size = 2, shape = 1) +
+  coord_flip() +
+  labs(
+    x = "Team",
+    y = "Home Field Advantage",
+    title = "Home Field Advantage by Team: 2002 - 2017"
+  ) +
+  scale_y_continuous(breaks = seq(1, 5, .5)) +
+  geom_hline(
+    yintercept = hfa_avg,
+    linetype = 2, col = "slategray3"
+  ) +
+  annotate("text",
+    y = 2.83, x = 4,
+    label = "League Average", size = 2.5,
+    color = "gray11"
+  ) +
+  theme_minimal(base_size = 8)
+```
+    
+
+## NFL HFA by team
+
+Like just about everything in sports betting and stats, to my knowledge there's no exact consensus on how to calculate HFA in the NFL. There's a few articles that I've checked my work against. The first is an article by Chase Stuart at footballperspective.com. He uses the basic formula:
+
+$(Home point differential – Road point differential) / 2$
+
+For the most part my numbers match up with his. There's also a quality article at pinnacle.com by Mark Taylor. His take is slightly different. Bill Barnwell's Grantland article uses `(Home PD - Road PD) / 2` method.
+
+## An art not a science
+
+I don't like using decimals because it implies precise knowledge. No one knows a team's true HFA, especially not to the second or third decimal. That's true for almost all stats. If you look across the articles above and around the net on HFA you'll notice that the numbers don't match up. No one has the same DB, some people include playoffs, some don't. Some don't include old stadiums, etc. There's a lot of choices that need to be made and each one impacts these numbers. These are just estimates. Treat them as such.
+
+## NFL HFA by Team 2002 - 2017
+
+```{r}
+nfl %>%
+  gather(location, team, c(h, v)) %>%
+  mutate(mov_h = ptsh - ptsv) %>%
+  group_by(team, location) %>%
+  summarise(mov_avg = mean(mov_h)) %>%
+  ungroup() %>%
+  mutate(mov_avg = ifelse(location == "v",
+    mov_avg * -1, mov_avg
+  )) %>%
+  spread(location, mov_avg) %>%
+  mutate(
+    diff = round(h, 2) - round(v, 2),
+    hfa = round(diff / 2, 1)
+  ) %>%
+  arrange(desc(hfa)) %>%
+  rename(hm_pt_diff = h, aw_pt_diff = v) %>%
+  knitr::kable(digits = 3)
+```
