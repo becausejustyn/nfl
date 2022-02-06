@@ -1,0 +1,97 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+team_epa_week <- purrr::map_df(c(2001:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+}) %>%
+  filter((rush == 1 | pass == 1) & !is.na(posteam) & posteam != '') %>%
+  group_by(season, week, posteam, defteam) %>%
+  summarise(
+    n = n(),
+    epa = sum(epa, na.rm = TRUE),
+    .groups = 'drop'
+    ) 
+
+team_epa_week1 <- team_epa_week %>% do.call(rbind, .)
+
+all_teams <- team_epa_week %>% 
+  pull(posteam) %>% 
+  unique()
+
+szn_rankings <- expand.grid(season = 2001:2021, week = 1:21, team = all_teams) %>%
+  filter(!(team == 'HOU' & season <= 2001)) %>%
+  left_join(team_epa_week %>% mutate(defteam = NULL), by = c('season', 'week', 'team' = 'posteam')) %>% 
+  left_join(team_epa_week %>% mutate(posteam = NULL), by = c('season', 'week', 'team' = 'defteam'), suffix = c('_off', '_def')) %>%
+  mutate_at(c('n_off', 'n_def', 'epa_off', 'epa_def'), function(x) ifelse(is.na(x), 0, x)) %>%
+  group_by(season, team) %>%
+  mutate(
+    szn_epa_play_off = (cumsum(epa_off) - epa_off) / (cumsum(n_off) - n_off),
+    szn_epa_play_def = (cumsum(epa_def) - epa_def) / (cumsum(n_def) - n_def)
+  ) %>%
+  group_by(season, week) %>%
+  arrange(-szn_epa_play_off) %>%
+  mutate(off_rank = ifelse(week == 1, NA, row_number())) %>%
+  arrange(szn_epa_play_def) %>%
+  mutate(def_rank = ifelse(week == 1, NA, row_number())) %>%
+  ungroup()
+```
+
+
+
+```{r}
+library(emphatic)
+
+game_target_df <- purrr::map_df(c(2001:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    ) %>% filter(!is.na(receiver_id)) %>% group_by(season, week, posteam, defteam, receiver_id) %>% summarise(targ = n(), .groups = 'drop') %>% return
+}) 
+
+game_target_df <- purrr::map_df(c(2001:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+}) %>% 
+  filter(!is.na(receiver_id)) %>% 
+  group_by(season, week, posteam, defteam, receiver_id) %>% 
+  summarise(
+    targ = n(), 
+    .groups = 'drop'
+    )
+
+roster_df <- purrr::map_df(c(2001:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
+    )
+}) 
+```
+
+```{r}
+game_target_df1 <- game_target_df %>%
+  left_join(roster_df, by = c('receiver_id' = 'gsis_id', 'season')) %>%
+  mutate(
+    is_WR = if_else(position == 'WR', 'WR Targ', 'non-WR Targ', 'non-WR Targ'),
+    Team = paste0(posteam, ' (', season, ' Wk ', week, ' vs ', defteam, ')')
+  ) %>%
+  group_by(Team, is_WR) %>%
+  summarise(
+    targ = sum(targ), 
+    .groups = 'drop') %>% 
+  arrange(rev(is_WR)) %>%
+  pivot_wider(names_from = is_WR, values_from = targ, values_fill = list(targ = 0)) %>%
+  arrange(-`non-WR Targ`, Team) %>%
+  filter(`non-WR Targ` >= 33) 
+
+%>%
+  hl(scale_colour_gradientn(colors = c('white', 'darkorange')), dest_cols = 1:3, cols = 'non-WR Targ', show_legend = FALSE)
+```
+
+```{r}
+game_target_df1
+```
+

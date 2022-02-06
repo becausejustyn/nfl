@@ -1,0 +1,160 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(tidyverse)
+library(espnscrapeR)
+library(gt)
+```
+
+```{r, label = 'data', eval = FALSE}
+all_win_rate <- scrape_espn_win_rate()
+
+#keeping it as a percent
+all_win_rate <- all_win_rate %>%
+  mutate(across(win_pct, ~ win_pct/100))
+
+#write_csv(all_win_rate, "win_rates.csv")
+```
+
+```{r, label = 'data_import'}
+all_win_rate <- read_csv("~/Documents/nfl/data/win_rates.csv", show_col_types = FALSE)
+```
+
+```{r, label = 'data_reshape'}
+wide_win_rate <- all_win_rate %>% 
+  pivot_wider(names_from = stat, values_from = win_pct, id_col = team) %>% 
+  set_names(nm = c("team", "prwr", "rswr", "pbwr", "rbwr")) %>% 
+  mutate(prwr_rk = min_rank(desc(prwr)), .before = prwr) %>% 
+  mutate(rswr_rk = min_rank(desc(rswr)), .before = rswr) %>% 
+  mutate(pbwr_rk = min_rank(desc(pbwr)), .before = pbwr) %>% 
+  mutate(rbwr_rk = min_rank(desc(rbwr)), .before = rbwr) 
+```
+
+```{r warning=FALSE}
+wide_win_rate %>% 
+  summarise(across(!contains("rk"), mean)) %>% 
+  mutate(team = "NFL")
+```
+
+```{r, label = 'win_rate_table'}
+gt_tab <- wide_win_rate %>% 
+  arrange(team) %>% 
+  gt(rowname_col = "team") %>% 
+  grand_summary_rows(
+    columns = c(3, 5, 7, 9),
+    fns = list(`NFL AVERAGE` = ~mean(.)),
+    formatter = fmt_percent,
+    decimals = 0
+  ) %>% 
+  data_color(
+    columns = contains("rk"),
+    colors = scales::col_numeric(
+      palette = c("#7fbf7b", "#f7f7f7", "#af8dc3"),
+      domain = c(1, 32)
+    )
+  ) %>% 
+  cols_label(
+    prwr_rk = "RK",
+    prwr = "Pass Rush",
+    pbwr_rk = "RK",
+    pbwr = "Pass Block",
+    rswr_rk = "RK",
+    rswr = "Run Stop",
+    rbwr_rk = "RK",
+    rbwr = "Run Block"
+  ) %>% 
+  opt_all_caps() %>% 
+  cols_width(
+    c(team) ~ px(225),
+    contains("rk") ~ px(50),
+    everything() ~ px(100)
+  ) %>% 
+  tab_style(
+    style = cell_borders(
+      sides = "left",
+      color = "black",
+      weight = px(3)
+    ),
+    locations = list(
+      cells_body(
+        columns = c(2,4,6,8)
+    ),
+    cells_grand_summary(
+      columns = 2
+    )
+    )
+  ) %>% 
+  tab_style(
+    style = cell_text(
+      weight = "bold",
+      color = "dimgray"
+    ),
+    locations = cells_body(
+      c(team)
+    )
+  ) %>% 
+  tab_spanner(
+    label = "DEFENSE",
+    columns = 2:5
+  ) %>% 
+  tab_spanner(
+    label = "OFFENSE",
+    columns = 6:9
+  ) %>% 
+  tab_source_note(
+    source_note = md("**Data:** ESPN<br>**Table:** @becausejustyn")
+  ) %>% 
+  fmt_percent(columns = c(3, 5, 7, 9), decimals = 0) %>% 
+  cols_align(align = "center", columns = 2:9) %>% 
+  cols_align(align = "left", columns = 1) %>% 
+  tab_header(
+    title = "2021 NFL pass-rushing, run-stopping, blocking leaderboard: Win rate rankings",
+    subtitle = "Regular Season"
+  ) %>% 
+  tab_style(
+    style = cell_borders(
+      sides = "bottom", 
+      color = "black", 
+      weight = px(3)
+    ),
+    locations = list(
+      cells_body(
+        rows = nrow(.$`_data`)
+        )
+    )
+  ) %>% 
+  tab_options(
+    heading.align = "left",
+    #table.border.bottom.color = "transparent",
+    table.border.bottom.width = px(3),
+    #table.border.top.color = "transparent",
+    table.border.top.width = px(3),
+    column_labels.border.bottom.color = "black",
+    column_labels.border.bottom.width = px(3),
+    heading.title.font.size = px(30),
+    heading.title.font.weight = "bold",
+    heading.subtitle.font.size = px(20),
+    #heading.border.bottom.color = "transparent",
+    heading.border.bottom.width = px(3),
+    table_body.hlines.color = "#ededed",
+    grand_summary_row.border.color = "black",
+    grand_summary_row.border.width = px(3)
+  ) %>% 
+  opt_table_font(font = google_font(name = "Chivo"))
+```
+
+```{r}
+gt_tab
+```
+
+```{r}
+gtsave(gt_tab, filename = "gt-espn-winrate.rtf")
+
+# https://git.io/JUMVx
+```
+

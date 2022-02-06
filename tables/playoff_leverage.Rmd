@@ -1,0 +1,136 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(gt)
+library(gtExtras)
+library(nflreadr)
+```
+
+```{r}
+team_chances <- tribble(
+  ~team_abbr, ~win, ~diff,
+  "BUF", 97, 5,
+  "DEN", 88, 15,
+  "TEN", 82, 13,
+  "BAL", 76, 18,
+  "CLE", 75, 15,
+  "LV", 73, 23,
+  "LAC", 71, 23,
+  "KC", 71, 18,
+  "NE", 38, 16,
+  "CIN", 37, 17,
+  "IND", 28, 14,
+  "MIA", 27, 16,
+  "PIT", 23, 11,
+  "HOU", 15, 7,
+  "JAX", 5, 3,
+  "NYJ", 3, 1,
+  #NFC
+  "LAR", 91, 12,
+  "DAL", 87, 11,
+  "TB", 85, 11,
+  "ARI", 81,18,
+  "CAR", 76, 17,
+  "NO", 73, 19,
+  "SF", 70, 24,
+  "GB", 69, 15, # nice
+  "MIN", 49, 17,
+  "SEA", 41, 22,
+  "PHI", 23, 10,
+  "WAS", 15, 8,
+  "CHI", 14, 8,
+  "NYG", 6, 3,
+  "ATL", 5, 3,
+  "DET", 4, 2
+)
+```
+
+```{r}
+all_teams <- nflreadr::load_teams() %>% 
+  select(team_logo_espn, team_abbr, team_conf, 
+         team_conference_logo, team_division) %>% 
+  filter(!(team_abbr %in% c("OAK", "SD", "LA", "STL")))
+
+opp_team <- all_teams %>% 
+  select(opp = team_abbr, opp_logo_espn = team_logo_espn)
+
+all_games <- nflreadr::load_schedules() %>%
+  mutate(home_team = ifelse(home_team == "LA", "LAR", home_team)) %>% 
+  filter(season == 2021, week == 4) %>% 
+  select(home_team, away_team)
+
+joined_df <- team_chances %>% 
+  left_join(all_teams, by = "team_abbr") %>% 
+  left_join(all_games, by = c("team_abbr" = "home_team")) %>%  
+  left_join(all_games, by = c("team_abbr" = "away_team")) %>% 
+  # select(-game_id.x, -game_id.y) %>% 
+  mutate(opp = ifelse(is.na(home_team), away_team, home_team),
+         where = ifelse(is.na(home_team), "vs", "@")) %>% 
+  left_join(opp_team, by = "opp") %>% 
+  select(-home_team, -away_team, -team_conference_logo) %>% 
+  mutate(team_division = str_remove(team_division, "AFC |NFC ")) %>% 
+  mutate(loss = win-diff) %>% 
+  select(team_conf, team_division, team_logo_espn,where,opp_logo_espn, 
+         team_abbr, opp, win, loss, diff)
+
+table_df <- joined_df %>% 
+  select(team_conf, div = team_division, team = team_logo_espn, at = where,
+         opp = opp_logo_espn, leverage = win, diff, loss2 = loss) %>% 
+  mutate(win = leverage, loss = loss2, .before = leverage)
+
+afc_logo <- "https://github.com/nflverse/nflfastR-data/raw/master/AFC.png"
+nfc_logo <- "https://github.com/nflverse/nflfastR-data/raw/master/NFC.png"
+```
+
+```{r}
+create_playoff_table <- function(data, conference){
+  
+  conf_logo <- if(conference == "NFC"){nfc_logo} else {afc_logo}
+  
+  table_df %>% 
+    filter(team_conf == conference) %>% 
+    select(-team_conf) %>% 
+    gt() %>% 
+    gtExtras::gt_img_rows(columns = c(team)) %>% 
+    gtExtras::gt_img_rows(columns = c(opp)) %>% 
+    gt_plt_bullet(leverage, loss2) %>% 
+    fmt_integer(columns = c(win,loss)) %>% 
+    gt_merge_stack(win, loss) %>% 
+    gt_color_box(columns = diff, palette = "ggsci::green_material", width = 45,
+                 domain = range(table_df$diff)) %>% 
+    cols_label(win = html("WIN<br><small style='color:grey';>LOSS</small>")) %>% 
+    gt_theme_espn() %>% 
+    tab_options(heading.border.bottom.color = "white") %>% 
+    tab_header(
+      title = add_text_img("Playoff Probability Leverage", conf_logo),
+      subtitle = "Week 4"
+    ) %>% 
+    tab_source_note(
+      html(
+        paste0(
+          "<b>Table:</b> @thomas_mock<br>",
+          "Adapted from @bburkeESPN"
+        )
+      )
+    ) %>% 
+    tab_footnote(
+      locations = cells_column_labels(columns = last_col()),
+      "Leverage = Difference in the chances to make the playoffs with a win vs loss"
+      )
+  
+}
+```
+
+```{r}
+two_tables <- map(c("AFC", "NFC"), ~create_playoff_table(table_df, .x))
+
+two_tables %>% 
+  gt_two_column_layout()
+```
+
+
