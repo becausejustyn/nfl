@@ -1,0 +1,209 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(nflfastR)
+library(gghighlight)
+library(ggrepel)
+library(na.tools)
+```
+
+```{r}
+theme_tej <- function() {
+  theme(axis.title = element_text(face='bold'), # make all axis titles bold
+        plot.title = element_text(face='bold', hjust=0.5, size = 20), # make all plot titles bold
+        legend.title = element_text(face='bold'), # make all legend titles bold
+        plot.subtitle = element_text(face='italic', hjust=0.5)) # make all subtitles italic
+}
+```
+
+```{r}
+library(tidyverse)
+
+pbp <- read_rds('~/Documents/nfl/data/pbp/play_by_play_2021.rds')
+
+ngs_receiving <- read_rds("~/Downloads/ngs_receiving.rds") %>%
+  filter(season == 2021)
+```
+
+```{r}
+#I thik week 0 is the season summary
+
+ngs_receiving <- ngs_receiving %>%
+  filter(week > 0)
+```
+
+```{r}
+replace0 <- function(x) {
+  if_else(condition = is.na(x), 
+          true = 0, 
+          false = as.numeric(x))
+}
+
+ngs_receiving2 <- ngs_receiving %>%
+  mutate(across(where(is.numeric), replace0)) %>%
+  select(where(is.numeric), -c(season, week)) %>%
+  scale()
+
+set.seed(222) # set seed to ensure reproduceability b/c k-means relies on random states for initialization 
+MAX_K <- 20 # max number of clusters
+sse <- c() # vector to hold SSE of each model
+
+for (k in 1:MAX_K) {
+  algo_k <- kmeans(ngs_receiving2, centers = k, nstart=22, iter.max=20) # k-means algorithm
+  sse <- c(sse, algo_k$tot.withinss) # get SSE
+} 
+```
+
+```{r}
+tibble(
+  k = 1:MAX_K, 
+  SSE = sse) %>%
+  ggplot(aes(
+    x = k, y = SSE)) + 
+  geom_point(colour = "red") + 
+  geom_line(colour = "navy") + 
+  labs(
+    x = "K", 
+    y = "SSE", 
+    title = "Where does this level off?"
+    ) + 
+  scale_x_continuous(breaks = seq(1, MAX_K, 1)) + 
+  theme_minimal() + 
+  theme_tej()
+```
+
+```{r}
+tibble(
+  k = 1:MAX_K, 
+  SSE_difference = sse - 2 * lead(sse) + lead(sse, 2)
+  ) %>%
+  dplyr::filter(k < MAX_K - 1) %>%
+  ggplot(aes(
+    x = k, y = SSE_difference)) + 
+  geom_point(colour = "#F84C1E") + 
+  geom_line(colour = "#232D4B") + 
+  labs(
+    x = "K", 
+    y = "SSE Rolling 2-Unit Difference", 
+    title = "A More Clear Picture") + 
+  scale_x_continuous(breaks = seq(1, MAX_K, 1)) + 
+  theme_minimal() + 
+  theme_tej()
+```
+
+```{r}
+#It levels off at 5 K's
+set.seed(22)
+
+K <- 5
+kmeans6 <- kmeans(ngs_receiving2, centers = K, nstart = 22, iter.max = 20)
+km_centers <- as.data.frame(kmeans6$centers) 
+km_centers$cluster <- c('Cluster 1', 'Cluster 2', 'Cluster 3',
+                        'Cluster 4', 'Cluster 5')
+```
+
+```{r}
+library(janitor)
+
+km_centers1 <- km_centers %>% 
+  clean_names(case = "title") %>% 
+  pivot_longer(
+    !Cluster, 
+    names_to = 'feature', values_to = 'z_val')
+```
+
+```{r}
+km_centers1 <- km_centers1 %>%
+  mutate(
+    feature = as_factor(feature),
+    Cluster = as_factor(Cluster)
+    )
+
+team_clusters <- tibble(
+  cluster = kmeans6$cluster, 
+  name = ngs_receiving$team_abbr)
+
+team_clusters <- team_clusters %>%
+  left_join(teams_colors_logos, 
+            by = c("name" = "team_abbr"))
+```
+
+```{r}
+km_centers1 %>% 
+  ggplot(aes(
+    x = feature, 
+    y = z_val, 
+    colour = Cluster)) + 
+  geom_point(size = 3) + 
+  scale_color_brewer(palette = "Set1") + 
+  gghighlight(use_direct_label = FALSE) + 
+  facet_wrap(~ Cluster, ncol = 3) + 
+  labs(
+    x = "Feature", 
+    y = "Cluster Center",
+    title = "Each Cluster's Features") + 
+  theme_minimal() + 
+  theme_tej() + 
+  theme(
+    legend.position = "none", 
+    strip.text = element_text(face = 'bold'),
+    axis.text.x = element_text(angle = 90, size = 8),
+    panel.grid.minor = element_blank())
+```
+
+```{r}
+pca <- prcomp(ngs_receiving2) # perform Principle Component Analysis 
+pca_summary <- summary(pca) # summary of PCA model
+
+pc2 <- as.data.frame(pca$x[, 1:2]) # extract first two PCs
+pc2$cluster <- as.factor(kmeans6$cluster) 
+cluster1_var <- round(pca_summary$importance[2, 1], 4) * 100 # get variance explained by cluster 1
+cluster2_var <- round(pca_summary$importance[2, 2], 4) * 100 # get variance explained by cluster 2
+
+pc2 <- pc2 %>%
+  arrange(cluster)
+
+team_clusters <- team_clusters %>%
+  arrange(cluster)
+
+pc3 <- bind_cols(pc2, team_clusters, .name_repair = "unique") %>% 
+  #drop duplicated column from merge
+  select(-'cluster...4') %>%
+  #fix the name
+  rename('cluster' = 'cluster...3')
+```
+
+```{r}
+library(nflfastR)
+library(ggimage)
+```
+
+```{r}
+pc3 %>% 
+  ggplot(aes(
+    x = PC1, 
+    y = PC2, 
+    colour = cluster)) + 
+  geom_point() +
+  theme_minimal() +
+  scale_shape_identity() +
+  labs(
+    x = paste0('PC1 (Accounts for ', cluster1_var, '% of Variance)'), # define cluster 1 % of variance
+    y = paste0('PC2 (Accounts for ', cluster2_var, '% of Variance)'), # define cluster 2 % of variance
+    title = 'Cluster Analysis of NFL Offensive Schemes in 2020',
+    subtitle = "Text next to the team's logo is the cluster they're in",
+    caption = "Data from nflfastR"
+    ) + 
+  theme_tej()
+```
+
+
+
+
+
+

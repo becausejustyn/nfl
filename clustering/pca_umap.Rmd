@@ -1,0 +1,94 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+ngs_receiving_pca2 <- ngs_receiving_pca %>%
+  group_by(player_display_name, player_position, team_abbr, player_gsis_id, player_short_name) %>%
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>%
+  ungroup()
+
+pca_rec2 <- recipe(~., data = ngs_receiving_pca2) %>%
+  update_role(player_display_name, player_position, team_abbr, player_gsis_id, player_short_name, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors())
+
+pca_prep2 <- prep(pca_rec2)
+
+pca_prep2
+```
+
+```{r}
+tidied_pca2 <- tidy(pca_prep2, 2)
+
+tidied_pca2 %>%
+  filter(component %in% paste0("PC", 1:5)) %>%
+  mutate(component = fct_inorder(component)) %>%
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)
+```
+
+```{r}
+library(tidytext)
+
+tidied_pca2 %>%
+  filter(component %in% paste0("PC", 1:5)) %>%
+  group_by(component) %>%
+  top_n(8, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )
+```
+
+```{r}
+player_position, team_abbr
+
+juice(pca_prep2) %>%
+  ggplot(aes(PC1, PC2, label = player_display_name)) +
+  geom_point(aes(color = team_abbr), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward") +
+  labs(color = NULL)
+
+
+juice(pca_prep2) %>%
+  ggplot(aes(PC1, PC2, label = player_display_name)) +
+  geom_point(aes(color = player_position), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward") +
+  labs(color = NULL)
+```
+
+```{r}
+library(embed)
+
+umap_rec <- recipe(~., data = ngs_receiving_pca2) %>%
+  update_role(player_display_name, player_position, team_abbr, player_gsis_id, player_short_name, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_umap(all_predictors())
+
+umap_prep <- prep(umap_rec)
+
+umap_prep
+```
+
+```{r}
+juice(umap_prep) %>%
+  ggplot(aes(UMAP1, UMAP2, label = player_display_name)) +
+  geom_point(aes(color = player_position), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward") +
+  labs(color = NULL)
+```
+
+
+
+
+

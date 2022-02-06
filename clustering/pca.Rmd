@@ -1,0 +1,153 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Data:
+
+-   rec: total receptions to filter out players with small sample size
+
+-   air_yards: distance the ball traveled in the air before reaching them
+
+-   yards_per_target: total yards / targets
+
+-   yards_after_catch: yards after the ball was caught
+
+-   td_rate: touchdowns per target
+
+-   outside_rec: binary variable if the receiver caught the ball outside the hashes
+
+-   dist_from_sticks: where they were targeted relative to distance needed to continue drive
+
+```{r}
+#rosters
+rosters <- nflreadr::load_rosters(c(2010:2020))
+
+rosters %>% 
+  write_rds("~/Desktop/nfl_sql/nfl_sql/data/rosters_2010_2020.rds")
+
+#players
+players <- nflreadr::load_player_stats(seasons = c(2010:2020), file_type = 'rds')
+
+players %>% 
+  write_rds("~/Desktop/nfl_sql/nfl_sql/data/players_2010_2020.rds")
+
+#pbp
+#pbp <- nflreadr::load_pbp(2010:2020, file_type = 'rds')
+
+all_pbp %>% 
+  write_rds("data/2000-2019_pbp_raw.rds")
+
+pbp <- all_pbp %>%
+  filter(
+    between(season, 2010, 2020) & 
+      season_type == 'REG' & 
+      !is.na(epa) & 
+      !is.na(receiver_id)
+    )
+
+pbp %>% 
+  write_rds("~/Desktop/nfl_sql/nfl_sql/data/pbp_2010_2020.rds")
+```
+
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+pbp <- pbp %>% 
+  left_join(rosters %>% 
+              select(position, season, gsis_id), by = c('fantasy_id' = 'gsis_id', 'season'))
+```
+
+```{r}
+wr <- pbp %>% 
+  filter(position == 'WR') 
+
+wr %>% 
+  write_rds("~/Desktop/nfl_sql/nfl_sql/data/wr_2010_2020.rds")
+```
+
+```{r}
+wr_stats_full <- wr %>% 
+  mutate(
+    outside_pass = ifelse(pass_location != 'middle', 1, 0),
+    pass_air_yards = ifelse(is.na(air_yards), 0, air_yards),
+    pass_air_yards = ifelse(ydstogo <= 10, pass_air_yards, NA
+                            )) %>% 
+  group_by(receiver_id) %>% 
+  summarise(
+    rec = sum(complete_pass),
+    air_yards = mean(pass_air_yards, na.rm = TRUE),
+    yards_per_target = mean(yards_gained, na.rm = TRUE),
+    yards_after_catch = mean(yards_after_catch, na.rm = TRUE),
+    td_rate = mean(pass_touchdown),
+    outside_rec = mean(outside_pass, na.rm = TRUE),
+    dist_from_sticks = mean(pass_air_yards - ydstogo, na.rm = TRUE
+                            )) %>% 
+  filter(rec > 10) %>% 
+  left_join(pbp %>% 
+              count(receiver_id, receiver, posteam) %>% 
+              group_by(receiver_id) %>% 
+              arrange(-n) %>% 
+              mutate(rn = row_number()) %>% 
+              filter(rn == 1) %>% 
+              select(-n, -rn)) %>%
+  relocate(receiver, .before = rec)
+
+wr_stats_full %>% 
+  write_rds("~/Desktop/nfl_sql/nfl_sql/data/wr_stats_full_2010_2020.rds")
+```
+
+```{r}
+wr_stats <- wr_stats_full %>% 
+  select(-starts_with('rec'), -posteam) %>% 
+  scale()
+
+wr_stats %>% 
+  as_tibble()
+```
+
+PCA from scratch
+
+Singular value decomposition is a matrix factorization method that generalizes eigendecomposition of a matrix.
+-   $U$
+-   $\sum$ is the diagonal matrix containing the eigenvalues
+-   $V$ contains the eigen vectors
+
+```{r}
+U <- svd(wr_stats)$u
+D <- svd(wr_stats)$d
+V <- svd(wr_stats)$v
+
+DS <- diag(1/svd(wr_stats)$d[1:2])
+US <- as.matrix(U[,1:2])
+VS <- as.matrix(V[,1:2])
+
+
+final <- VS %*% DS %*% t(US)
+
+pca_data <- final[1:2, ] %>% MASS::ginv()
+
+# Principal components explained variance
+sum(D[[1]], D[[2]])/sum(D)
+```
+
+Using SVD to get the principal components, we can use the largest 2 to explain the ~54% of the variance. This allows for a 2 dimensional scatter plot to analyze players.
+
+```{r}
+pca_data %>% 
+  as_tibble() %>% 
+  bind_cols(wr_stats_full %>% 
+              select(starts_with("rec"), posteam
+                     )) %>% 
+  ggplot(aes(V1, V2)) +
+  geom_point() +
+  ggrepel::geom_text_repel(aes(label = paste(receiver, posteam)), max.overlaps = 10) +
+  theme_minimal()
+```
+
+
+
+
