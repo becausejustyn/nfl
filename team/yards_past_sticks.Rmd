@@ -1,0 +1,79 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(ggimage)
+library(ggrepel)
+library(scales)
+
+pbp <- purrr::map_df(2021, function(x) {
+  read_rds(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+}) %>%
+  filter(season_type == 'REG')
+```
+
+### Each Team's Yards Past Sticks and YAC on 2nd and 3rd Down
+
+```{r}
+pbp_rp <- pbp %>%
+  filter(
+    !is.na(epa),
+    rush == 1 | pass == 1
+    ) 
+
+teams <- pbp %>%
+  group_by(posteam, pass) %>%
+  summarise(epa = mean(epa)) 
+
+#teams %>% group_by(pass) %>% summarise(league_avg = mean(epa, na.rm = TRUE))
+```
+
+```{r}
+yards_past_sticks <- pbp_rp %>%
+  mutate(yards_past_sticks = air_yards - ydstogo) %>%
+  filter(
+    !is.na(yards_past_sticks),
+    down %in% c(2, 3)
+    ) %>%
+  group_by(posteam) %>%
+  summarise(
+    avg_yps = mean(yards_past_sticks, na.rm = TRUE),
+    yps_rate = 100*mean(yards_past_sticks >= 0),
+    yac = mean(yards_after_catch, na.rm = TRUE)
+    ) %>%
+  left_join(nflfastR::teams_colors_logos, by = c("posteam" = "team_abbr"))
+```
+
+```{r}
+yards_past_sticks %>%
+  ggplot(aes(
+    x = avg_yps, 
+    y = yac,
+    colour = team_color,
+    fill = team_color2
+  )) +
+  #geom_point(aes(colour = team_color), alpha = 0.6) +
+  #geom_jitter() +
+  geom_point(size = 2, alpha = 0.6) +
+  #geom_point(color = qbs$team_color, cex=qbs$n_plays / 350, alpha = .6) +
+  geom_text_repel(aes(label = team_nick)) +
+  scale_color_identity(aesthetics = c("fill", "color")) +
+  labs(
+    x = 'Average Yards Past Sticks',
+    y = 'Average Yards After Contact',
+    title = "Yards Past Sticks & YAC on 2nd or 3rd Down",
+    subtitle = "Regular Season, 2021",
+    caption = 'data: nflfastR'
+  ) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  tomtom::theme_538() 
+```
+
+
+

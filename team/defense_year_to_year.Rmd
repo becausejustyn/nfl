@@ -4,13 +4,19 @@ output: html_notebook
 ---
 
 ```{r}
-pbp <- purrr::map_df(c(2016:2021), function(x) {
+library(tidyverse)
+library(ggbeeswarm)
+```
+
+```{r}
+pbp <- purrr::map_df(c(2011:2021), function(x) {
   readRDS(
       glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
     )
-})
+}) %>%
+  filter(season_type == 'REG')
 
-rosters <- purrr::map_df(c(2016:2021), function(x) {
+rosters <- purrr::map_df(c(2011:2021), function(x) {
   readRDS(
       glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
     )
@@ -23,8 +29,10 @@ rosters <- purrr::map_df(c(2016:2021), function(x) {
 
 ```{r}
 defenses <- pbp %>%
-  filter(!is.na(epa)) %>%
-  filter(!is.na(defteam)) %>%
+  filter(
+    !is.na(epa),
+    !is.na(defteam)
+    ) %>%
   group_by(defteam, season) %>%
   summarise(def_epa = mean(epa)) %>%
   arrange(def_epa) %>%
@@ -49,16 +57,16 @@ defenses %>%
   ggbeeswarm::geom_quasirandom(pch = 21, size = 7, width = 0.1) +
   #viridis::scale_fill_viridis("", guide = FALSE) +
   scale_fill_viridis_b("", guide = "none") +
-  theme_538() +
+  tomtom::theme_538() +
   geom_hline(yintercept = 5, linetype = "dashed") +
   geom_hline(yintercept = 10, linetype = "dashed") +
   labs(
-    title = "Where Top 5 D ranks the year after",
-    subtitle = "2012-2020, determined by EPA/Play",
+    title = "Where Top 5 Defense ranks the year after",
+    subtitle = "2011-2020, determined by EPA/Play",
     x = "Season", 
     y = "Next Season Rank"
     ) +
-  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 8)) +
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
 ```
 
@@ -66,12 +74,12 @@ defenses %>%
 ### Bad Defenses
 
 ```{r}
-library(ggbeeswarm)
-
 bad_defenses <- pbp %>%
-  filter(pass == 1 | rush == 1) %>%
-  filter(!is.na(epa)) %>%
-  filter(!is.na(defteam)) %>%
+  filter(
+    !is.na(epa),
+    !is.na(defteam),
+    pass == 1 | rush == 1
+    ) %>%
   group_by(defteam, season) %>%
   summarise(def_epa = mean(epa)) %>%
   arrange(def_epa) %>%
@@ -94,12 +102,12 @@ bad_defenses %>%
     )) +
   geom_quasirandom(pch = 21, size = 7, width = 0.1) +
   viridis::scale_fill_viridis("", guide = "none") +
-  theme_538() +
+  tomtom::theme_538() +
   geom_hline(yintercept = 28, linetype = "dashed") +
   geom_hline(yintercept = 16, linetype = "dashed") +
-  labs(title = "Where bottom 5 D ranks the year after",
-  subtitle = "2016-2021, determined by EPA/Play",
+  labs(title = "Where bottom 5 Defense ranks the year after",
+  subtitle = "2011-2021, determined by EPA/Play",
   x = "Season", y = "Next Season Rank") +
-  scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
 ```
