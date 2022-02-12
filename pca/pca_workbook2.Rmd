@@ -1,0 +1,643 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r loading data}
+library(tidyverse)
+
+df <- purrr::map_df(c(2011:2021), function(x) {
+  read_rds(
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
+}) %>%
+  filter(season_type == 'REG')
+
+rosters <- purrr::map_df(c(2011:2021), function(x) {
+  read_rds(
+    glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
+  )
+})
+```
+
+```{r}
+# counting n plays outside of 5 to 95% WP
+df %>%
+  mutate(bin = case_when(
+    between(wp, 0.05, 0.95) ~ "normal",
+    TRUE ~ "extreme"
+  )) %>%
+  group_by(bin) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(
+    prop = n/sum(n)
+  )
+
+# 17.5% of plays are outside 5-95%
+# for now keep them in
+```
+
+```{r}
+# posteam == NA are non-plays
+df %>%
+  filter(is.na(posteam)) %>% 
+  .$desc
+
+df <- filter(df, !is.na(posteam))
+```
+
+```{r removing columns}
+qb <- df %>%
+  select(
+    -c(
+      "assist_tackle", "assist_tackle_1_player_id", "assist_tackle_1_player_name", "assist_tackle_1_team", "assist_tackle_2_player_id", 
+      "assist_tackle_2_player_name", "assist_tackle_2_team", "assist_tackle_3_player_id", "assist_tackle_3_player_name", "assist_tackle_3_team", 
+      "assist_tackle_4_player_id", "assist_tackle_4_player_name", "assist_tackle_4_team", "kick_distance", "kicker_player_id", "kicker_player_name", 
+      "kickoff_attempt", "kickoff_downed", "kickoff_fair_catch", "kickoff_in_endzone", "kickoff_inside_twenty", "kickoff_out_of_bounds", 
+      "kickoff_returner_player_id", "kickoff_returner_player_name", "lateral_interception_player_id", "lateral_interception_player_name", 
+      "lateral_kickoff_returner_player_id", "lateral_kickoff_returner_player_name", "lateral_punt_returner_player_id", "lateral_punt_returner_player_name", 
+      "lateral_receiver_player_id", "lateral_receiver_player_name", "lateral_reception", "lateral_recovery", "lateral_return", "lateral_rush", 
+      "lateral_rusher_player_id", "lateral_rusher_player_name", "lateral_sack_player_id", "lateral_sack_player_name", "own_kickoff_recovery", 
+      "own_kickoff_recovery_player_id", "own_kickoff_recovery_player_name", "own_kickoff_recovery_td", "solo_tackle", "solo_tackle_1_player_id", 
+      "solo_tackle_1_player_name", "solo_tackle_1_team", "solo_tackle_2_player_id", "solo_tackle_2_player_name", "solo_tackle_2_team", "punt_attempt", 
+      "punt_blocked", "punt_downed", "punt_fair_catch", "punt_in_endzone", "punt_inside_twenty", "punt_out_of_bounds", "punt_returner_player_id", 
+      "punt_returner_player_name", "punter_player_id", "punter_player_name", "total_away_comp_air_epa", "total_away_comp_air_wpa", "total_away_comp_yac_epa", 
+      "total_away_comp_yac_wpa", "total_away_epa", "total_away_pass_epa", "total_away_pass_wpa", "total_away_raw_air_epa", "total_away_raw_air_wpa", 
+      "total_away_raw_yac_epa", "total_away_raw_yac_wpa", "total_away_rush_epa", "total_away_rush_wpa", "total_away_score", "total_home_comp_air_epa", 
+      "total_home_comp_air_wpa", "total_home_comp_yac_epa", "total_home_comp_yac_wpa", "total_home_epa", "total_home_pass_epa", "total_home_pass_wpa", 
+      "total_home_raw_air_epa", "total_home_raw_air_wpa", "total_home_raw_yac_epa", "total_home_raw_yac_wpa", "total_home_rush_epa",
+      "total_home_rush_wpa", "total_home_score", "touchback", "two_point_attempt", "two_point_conv_result"
+    )
+  )
+```
+
+Height in the roster data is a character in a bad format e.g. "6-4", so I wrote a function to convert it to cm.
+
+```{r height_function}
+height_to_cm <- function(x) {
+  # this is to convert a character string of height to cm
+  # e.g. "6-4" will convert to 193.04 as a numerical
+  
+  #can cheat here since it is unlikely that 10 feet will be used
+  feet = substr(x, 1, 1) %>% as.numeric()
+  inches = substr(x, 3, 4) %>% as.numeric()
+  cm = (feet * 30.48) + (inches * 2.54)
+  return(cm)
+}
+```
+
+```{r}
+#keeping values where the id matches from the roster data
+
+qb_roster <- rosters %>%
+  filter(position == 'QB') %>%
+  select(full_name, season, posteam = team, position, birth_date, height, weight, passer_id = gsis_id, headshot_url) %>%
+  mutate(
+    height = height_to_cm(height),
+    weight = as.numeric(weight),
+    age = format(Sys.time(), "%Y") %>% as.numeric() - lubridate::year(birth_date)
+  ) %>%
+  select(-birth_date)
+
+qbs <- qb %>% 
+  filter(passer_id %in% qb_roster[['passer_id']] | rusher_id %in% qb_roster[['passer_id']]) %>%
+  # doing this now so I can make a label with the season and the QB name
+  left_join(select(qb_roster, full_name, passer_id = passer_id)) %>%
+  mutate(name_label = paste0(full_name, ", ", season))
+```
+
+## Rushing
+```{r}
+#create seperate df for rushing and passing
+
+# dim 149035 285
+qb_rushes <- filter(qbs, play_type == 'run') %>%
+  #dropping columns that are not useful
+  left_join(select(qb_roster, -c(position, headshot_url)))
+
+# remove plays where the qb is not matched to the ID
+# this removed about 5% of rushing plays
+qb_rushes <- qb_rushes %>%
+  filter(rusher_player_id == rusher_id)
+
+# remove players with less than 3 rushing attempts
+# this reduced it from 1377 to 872
+# distinct(qb_rushes, id)
+
+# making a list of player_id to keep
+keep_rush <- qb_rushes %>%
+  group_by(id) %>%
+  count() %>% 
+  ungroup() %>%
+  filter(n > 3) %>%
+  pull(id)
+
+qb_rushes <- qb_rushes %>%
+  filter(id %in% keep_rush) 
+```
+
+## Passing
+
+```{r}
+# dim 210832 285
+qb_passes <- filter(qbs, play_type == 'pass') %>%
+  left_join(qb_roster)
+
+# this did not make a difference
+qb_passes %>%
+  filter(passer_player_id == passer_id) %>% dim()
+
+# at least 100 passes
+# from 406 qb to 145
+# distinct(qb_passes, id)
+
+# making a list of player_id to keep
+keep_pass <- qb_passes %>%
+  group_by(id) %>%
+  count() %>%
+  ungroup() %>%
+  filter(n > 100) %>%
+  pull(id)
+
+qb_passes <- qb_passes %>%
+  filter(id %in% keep_pass) 
+```
+
+Game Count
+
+```{r}
+# get count of games played, then remove
+# any with less than 5 games played
+
+# doing it this way so you don't calculate the stats for the players that will end up getting dropped
+
+game_count <- qb_passes %>%
+  group_by(id) %>%
+  summarise(
+    n = n_distinct(game_id),
+    .groups = "drop"
+  ) %>%
+  filter(n > 5) %>%
+  pull(id)
+ 
+# dropped from 145 to 136 players
+qb_passes <- qb_passes %>%
+  filter(id %in% game_count) 
+
+# 838 to 122 players
+qb_rushes <- qb_rushes %>%
+  filter(id %in% game_count) 
+```
+
+```{r explosiveness function}
+explosiveness <- function(x) {
+  # Warning: O(n**2) in time and memory, where n = len(x)
+  
+  # Mean absolute difference
+  mad = outer(x, x, FUN = "-") %>% 
+    abs() %>% 
+    mean(na.rm = TRUE)
+  
+  # Relative mean absolute difference
+  mean = mean(x, na.rm = TRUE)
+  rel_mad = mad / mean
+  
+  # Gini coefficient
+  g = 0.5 * rel_mad
+  
+  return(g)
+}
+```
+
+```{r}
+qb_rushing_stats <- qb_rushes %>%
+  group_by(id) %>%
+  summarise(
+    # yards per carry
+    ypc = mean(yards_gained), 
+    # WPA on rushes per game
+    wpa = sum(wpa, na.rm = TRUE) / n_distinct(game_id),
+    # n attempts per game
+    Att = length(yards_gained) / n_distinct(game_id),
+    # run explosiveness
+    Run_Exp = explosiveness(yards_gained),
+    .groups = "drop"
+    )
+```
+
+```{r qb_rushing_stats1}
+qb_rushing_stats1 <- qb_rushes %>%
+  group_by(id) %>%
+  summarise(
+    games = n_distinct(game_id),
+    att = length(yards_gained),
+    rush_att = sum(rush_attempt, na.rm = TRUE),
+    qb_scramble = sum(qb_scramble, na.rm = TRUE),
+    attempt_g = att/games,
+    wpa_g = wpa/games,
+    .groups = "drop"
+  ) %>% 
+  distinct(id, .keep_all = TRUE) %>%
+  select(-att)
+```
+
+
+```{r qb_passes_per_dropback}
+qb_passes_per_dropback <- qb_passes %>%
+  group_by(id) %>%
+  summarise(
+    games = n_distinct(game_id),
+    dropback = sum(qb_dropback, na.rm = TRUE),
+    touchdown = mean(touchdown, na.rm = TRUE), 
+    yards_gained = mean(yards_gained, na.rm = TRUE),
+    yards_after_catch = mean(yards_after_catch, na.rm = TRUE),
+    air_yards = mean(air_yards, na.rm = TRUE),
+    interception = mean(interception, na.rm = TRUE),  
+    complete_pass = mean(complete_pass, na.rm = TRUE),
+    incomplete_pass = mean(incomplete_pass, na.rm = TRUE),
+    qb_hit = mean(qb_hit, na.rm = TRUE),
+    sack = mean(sack, na.rm = TRUE),
+    success = mean(success, na.rm = TRUE),
+    epa = mean(epa, na.rm = TRUE),
+    wp = mean(wp, na.rm = TRUE),
+    wpa = mean(wpa, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+#this is quite slow, so compute it seperately from the above df
+
+explosiveness_df <- qb_passes %>%
+  group_by(id) %>%
+  summarise(
+    yards_gained_explosiveness = explosiveness(yards_gained), 
+    yac_explosiveness = explosiveness(yards_after_catch), 
+    air_yards_explosiveness = explosiveness(air_yards),
+    .groups = "drop"
+  )
+
+#then can join it
+qb_passes_per_dropback <- qb_passes_per_dropback %>%
+  left_join(explosiveness_df)
+
+# dropbacks per game
+qb_passes_per_dropback <- qb_passes_per_dropback %>%
+  mutate(
+    dropbacks_game = dropback/games, .after = dropback
+  )
+```
+
+### Adding Roster Data
+
+```{r}
+#renaming it so the join is easier
+qb_roster <- qb_roster %>%
+  rename(id = passer_id)
+
+#adding roster data
+qb_passes_per_dropback <- qb_passes_per_dropback %>%
+  left_join(qb_roster)
+  
+#height and weight are character types, changing them to numerical
+
+qb_passes_per_dropback <- qb_passes_per_dropback %>%
+  mutate(
+    # function defined above
+     height_cm = height_to_cm(height),
+     weight = as.numeric(weight)
+  ) %>%
+  #can drop position since they are all qb
+  #should of done a transmute so you did not
+  #have to drop the height column
+  select(-c(position, height)) %>%
+  distinct(id, .keep_all = TRUE)
+
+# birthdate does not feel very useful, so I am just keeping their age
+qb_passes_per_dropback <- qb_passes_per_dropback %>%
+  mutate(
+    age = 2022 - lubridate::year(birth_date)
+         ) %>%
+  select(-birth_date)
+```
+
+## Viz
+
+```{r}
+library(GGally)
+
+qb_passes_per_dropback %>%
+  select(where(is.numeric)) %>%
+  ggcorr(method = c("everything", "pearson")) 
+
+qb_passes_per_dropback %>%
+  select(where(is.numeric)) %>%
+  corrr::correlate(use = "pairwise.complete.obs")
+```
+
+## PCA
+
+```{r}
+qb_passes_per_dropback %>% map_dbl(~sum(is.na(.)))
+
+library(tidymodels)
+
+pca_rec <- recipe(~., data = qb_passes_per_dropback) %>%
+  update_role(id, full_name, posteam, headshot_url, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors())
+
+pca_prep <- prep(pca_rec)
+
+pca_prep
+```
+
+```{r}
+tidied_pca <- tidy(pca_prep, 2)
+
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:5)) %>%
+  mutate(component = fct_inorder(component)) %>%
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)
+```
+
+```{r}
+library(tidytext)
+
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:4)) %>%
+  group_by(component) %>%
+  top_n(8, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )
+```
+
+```{r}
+juice(pca_prep) %>%
+  ggplot(aes(PC1, PC2, label = full_name)) +
+  geom_point(aes(colour = posteam), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward", family = "Lato") +
+  labs(color = NULL) +
+  theme(legend.position = "none")
+```
+
+```{r}
+# get pca loadings into wider format
+pca_wider <- tidied_pca %>% 
+  tidyr::pivot_wider(names_from = component, id_cols = terms)
+
+# define arrow style
+arrow_style <- arrow(length = unit(.05, "inches"),
+                     type = "closed")
+
+
+pca_plot <- juice(pca_prep) %>%
+  ggplot(aes(PC1, PC2)) +
+  geom_point(alpha = 0.8, size = 2)
+
+
+  pca_plot + geom_segment(
+    data = pca_wider,
+               aes(xend = PC1, yend = PC2), 
+               x = 0, 
+               y = 0, 
+               arrow = arrow_style) + 
+  geom_text(data = pca_wider,
+            aes(x = PC1, y = PC2, label = terms), 
+            hjust = 0, 
+            vjust = 1,
+            size = 5, 
+            color = '#0A537D') 
+
+
+pca_plot %+% 
+  aes(PC2, PC3) +
+  geom_segment(data = pca_wider,
+               aes(xend = PC2, yend = PC3), 
+               x = 0, 
+               y = 0, 
+               arrow = arrow_style)
+```
+
+
+
+## UMAP
+
+```{r}
+library(embed)
+
+umap_rec <- recipe(~., data = qb_passes_per_dropback) %>%
+  update_role(id, full_name, posteam, headshot_url, new_role = "id") %>%
+  step_normalize(all_predictors()) %>%
+  step_umap(all_predictors())
+
+umap_prep <- prep(umap_rec)
+```
+
+```{r}
+juice(umap_prep) %>%
+  ggplot(aes(UMAP1, UMAP2, label = full_name)) +
+  geom_point(alpha = 0.7, size = 2) +
+  #geom_point(aes(color = posteam), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward", family = "Lato") +
+  theme(legend.position = "none") +
+  labs(color = NULL)
+```
+
+```{r}
+penguins %>% 
+  dplyr::select(where(is.numeric)) %>% 
+  tidyr::drop_na() %>% 
+  scale() %>% 
+  prcomp() %>%  
+  .$rotation
+
+X <- qb_passes_per_dropback %>% select(where(is.numeric))
+
+prin_comp <- prcomp(X, scale. = TRUE)
+
+components <- prin_comp[["x"]]
+components <- data.frame(components)
+components$PC2 <- -components$PC2
+components$PC3 <- -components$PC3
+components = cbind(components, qb_passes_per_dropback$full_name)
+
+tot_explained_variance_ratio <- summary(prin_comp)[["importance"]]['Proportion of Variance',]
+tot_explained_variance_ratio <- 100 * sum(tot_explained_variance_ratio)
+
+tit = 'Total Explained Variance = 100.001'
+
+library(plotly)
+
+fig <- plot_ly(components, x = ~PC1, y = ~PC2, z = ~PC3, color = ~iris$Species, colors = c('#636EFA','#EF553B','#00CC96') ) %>%
+  add_markers(size = 12)
+
+fig <- plot_ly(components, x = ~PC1, y = ~PC2, z = ~PC3, text = qb_passes_per_dropback$full_name) %>% add_markers(size = 12)
+
+#qb_passes_per_dropback$full_name
+
+fig <- fig %>%
+  layout(
+    title = tit,
+    scene = list(bgcolor = "#e5ecf6")
+)
+
+fig
+```
+
+
+
+### Passing Mean
+```{r}
+passing_mean <- qb_passes %>%
+  group_by(id) %>%
+  summarise(
+    touchdown = mean(touchdown, na.rm = TRUE), 
+    interception = mean(interception, na.rm = TRUE),  
+    complete_pass = mean(complete_pass, na.rm = TRUE), 
+    qb_hit = mean(qb_hit, na.rm = TRUE),
+    sack = mean(sack, na.rm = TRUE),
+    success = mean(success, na.rm = TRUE),
+    epa = mean(epa, na.rm = TRUE),
+    wp = mean(wp, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+passing_mean <- passing_mean %>%
+  left_join(select(qb_roster, full_name, id = passer_id)) %>%
+  distinct(id, .keep_all = TRUE)
+```
+
+### Passing Per Game
+
+```{r}
+passing_game <- qb_passes %>%
+  group_by(id) %>%
+  summarise(
+    game = n_distinct(game_id),
+    touchdown = sum(touchdown, na.rm = TRUE)/game, 
+    interception = sum(interception, na.rm = TRUE)/game,  
+    complete_pass = sum(complete_pass, na.rm = TRUE)/game, 
+    qb_hit = sum(qb_hit, na.rm = TRUE)/game,
+    sack = sum(sack, na.rm = TRUE)/game,
+    success = sum(success, na.rm = TRUE)/game,
+    epa = sum(epa, na.rm = TRUE)/game,
+    wp = sum(wp, na.rm = TRUE)/game,
+    .groups = "drop"
+  )
+
+passing_game <- passing_game %>%
+  left_join(select(qb_roster, full_name, id = passer_id)) %>%
+  distinct(id, .keep_all = TRUE)
+```
+
+### Passing Per Play
+
+```{r}
+passing_play <- qb_passes %>%
+  group_by(id) %>%
+  summarise(
+    plays = length(play_id),
+    dropback = sum(qb_dropback, na.rm = TRUE),
+    touchdown = sum(touchdown, na.rm = TRUE)/plays, 
+    interception = sum(interception, na.rm = TRUE)/plays,  
+    complete_pass = sum(complete_pass, na.rm = TRUE)/plays, 
+    qb_hit = sum(qb_hit, na.rm = TRUE)/plays,
+    sack = sum(sack, na.rm = TRUE)/plays,
+    success = sum(success, na.rm = TRUE)/plays,
+    epa = sum(epa, na.rm = TRUE)/plays,
+    wp = sum(wp, na.rm = TRUE)/plays,
+    .groups = "drop"
+  ) %>%
+  left_join(select(qb_roster, full_name, id = passer_id)) %>%
+  distinct(id, .keep_all = TRUE)
+```
+
+```{r}
+sum(completions, na.rm = TRUE)
+sum(complete_pass == 0) # sack == 0
+sum(sack == 1)
+
+# mean for yards_gained, yards_after_catch, air_yards
+```
+
+```{r}
+explosivenesss <- df %>% 
+  group_by(id) %>% 
+  summarise(
+    yards_gained_explosiveness = explosiveness(yards_gained), 
+    yards_after_catch_explosiveness = explosiveness(yards_after_catch), 
+    air_yards_explosiveness = explosiveness(air_yards)
+    )
+
+#icay = qb_incomps.groupby(['id'])['air_yards'].mean().reset_index()
+#icay = icay.rename(columns={'air_yards':'ICAY'})
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```

@@ -1,0 +1,115 @@
+library(tidyverse)
+
+#height function
+
+height_to_cm <- function(x) {
+  # this is to convert a character string of height to cm
+  # e.g. "6-4" will convert to 193.04 as a numerical
+  
+  #can cheat here since it is unlikely that 10 feet will be used
+  feet = substr(x, 1, 1) %>% as.numeric()
+  inches = substr(x, 3, 4) %>% as.numeric()
+  cm = (feet * 30.48) + (inches * 2.54)
+  return(cm)
+}
+
+#play by play data 
+
+pbp <- purrr::map_df(c(2016:2021), function(x) {
+  read_rds(
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
+}) %>%
+  filter(season_type == 'REG')
+
+#player stats
+
+players <- purrr::map_df(c(2016:2021), function(x) {
+  read_rds(
+    glue::glue("~/Documents/nfl/data/player_stats/player_stats_{x}.rds")
+  )
+})
+
+# roster data
+
+rosters <- purrr::map_df(c(2016:2021), function(x) {
+  read_rds(
+    glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
+  )
+})
+
+# keep receiving positions, fix the data types, removing columns you do not want
+rosters <- rosters %>%
+  filter(position %in% c("RB", "WR", "TE", "FB")) %>%
+  mutate(
+    height = height_to_cm(height),
+    weight = weight %>% as.numeric(),
+    age = format(Sys.time(), "%Y") %>% as.numeric() - lubridate::year(birth_date), .after = weight,
+    status = as_factor(status)
+  ) %>%
+  select(-c(
+    depth_chart_position:jersey_number, birth_date, 
+    first_name:last_name, college:high_school, 
+    espn_id:pff_id, fantasy_data_id:sportradar_id))
+
+# add roster data to the pbp data
+# this is not very effecient
+
+pbp_roster <- pbp %>% 
+  left_join(select(rosters, position, season, gsis_id), by = c('fantasy_id' = 'gsis_id', 'season'))
+
+# just incase any snuck through
+
+rec_players <- pbp_roster %>% 
+  filter(position %in% c('TE', 'WR', 'RB', 'FB')) 
+
+# calculate some stats
+
+rec_stats_full <- rec_players %>%
+  mutate(
+    outside_pass = ifelse(pass_location != "middle", 1, 0),
+    pass_air_yards = ifelse(is.na(air_yards), 0, air_yards),
+    pass_air_yards = ifelse(ydstogo <= 10, pass_air_yards, NA)
+  ) %>%
+  group_by(receiver_id, season) %>%
+  summarise(
+    rec = sum(complete_pass),
+    air_yards = mean(pass_air_yards, na.rm = T),
+    yards_per_target = mean(yards_gained, na.rm = T),
+    yards_after_catch = mean(yards_after_catch, na.rm = T),
+    td_rate = mean(pass_touchdown),
+    outside_rec = mean(outside_pass, na.rm = T),
+    dist_from_sticks = mean(pass_air_yards - ydstogo, na.rm = T),
+    .groups = "drop"
+  ) %>%
+  filter(rec > 10) %>%
+  left_join(
+    pbp %>% 
+      count(receiver_id, receiver, posteam) %>% 
+      group_by(receiver_id) %>% 
+      arrange(-n) %>% 
+      mutate(rn = row_number()) %>% 
+      filter(rn == 1) %>% 
+      select(-n, -rn)
+  ) %>%
+  relocate(receiver, .before = rec)
+
+rec_stats_full <- rec_stats_full %>%
+  left_join(select(rec_players, position, receiver_id)) %>% 
+  distinct(receiver_id, season, .keep_all = TRUE)
+
+# read in NGS stats
+
+ngs_receiving_season <- read_rds("~/Documents/nfl/data/ngs/ngs_receiving.rds") %>% 
+  filter(season_type == 'REG', week == 0) %>% 
+  select(-c(week, season_type)) %>%
+  left_join(rosters, by = c("player_gsis_id" = "gsis_id", "season" = "season")) %>%
+  mutate(player_label = paste0(player_display_name, ", ", season)) 
+
+# combine ngs stats with other stats
+rec_stats <- ngs_receiving_season %>%
+  left_join(
+    rec_stats_full, by = c("player_gsis_id" = "receiver_id", "position" = "position", "season" = "season")
+  ) %>% select(-c(posteam, team, player_short_name, player_jersey_number, player_last_name, player_first_name))
+
+write_rds(rec_stats, "rec_stats.rds")
