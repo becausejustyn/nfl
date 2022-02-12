@@ -72,23 +72,40 @@ qb <- df %>%
   )
 ```
 
+Height in the roster data is a character in a bad format e.g. "6-4", so I wrote a function to convert it to cm.
+
+```{r height_function}
+height_to_cm <- function(x) {
+  # this is to convert a character string of height to cm
+  # e.g. "6-4" will convert to 193.04 as a numerical
+  
+  #can cheat here since it is unlikely that 10 feet will be used
+  feet = substr(x, 1, 1) %>% as.numeric()
+  inches = substr(x, 3, 4) %>% as.numeric()
+  cm = (feet * 30.48) + (inches * 2.54)
+  return(cm)
+}
+```
+
 ```{r}
 #keeping values where the id matches from the roster data
 
 qb_roster <- rosters %>%
   filter(position == 'QB') %>%
-  select(full_name, season, posteam = team, position, birth_date, height, weight, passer_id = gsis_id, headshot_url)
+  select(full_name, season, posteam = team, position, birth_date, height, weight, passer_id = gsis_id, headshot_url) %>%
+  mutate(
+    height = height_to_cm(height),
+    weight = as.numeric(weight),
+    age = format(Sys.time(), "%Y") %>% as.numeric() - lubridate::year(birth_date)
+  ) %>%
+  select(-birth_date)
 
 qbs <- qb %>% 
-  filter(passer_id %in% qb_roster[['passer_id']] | rusher_id %in% qb_roster[['passer_id']])
+  filter(passer_id %in% qb_roster[['passer_id']] | rusher_id %in% qb_roster[['passer_id']]) %>%
+  # doing this now so I can make a label with the season and the QB name
+  left_join(select(qb_roster, full_name, passer_id = passer_id)) %>%
+  mutate(name_label = paste0(full_name, ", ", season))
 ```
-
-```{r id_label}
-#this will be helpful when you want to compare seasons, but for now it might be better just to compare players in total
-qbs %>%
-  mutate(id_label = paste0(passer_player_name, "_", season)) %>% select(id_label)
-```
-
 
 ## Rushing
 ```{r}
@@ -96,7 +113,8 @@ qbs %>%
 
 # dim 149035 285
 qb_rushes <- filter(qbs, play_type == 'run') %>%
-  left_join(qb_roster)
+  #dropping columns that are not useful
+  left_join(select(qb_roster, -c(position, headshot_url)))
 
 # remove plays where the qb is not matched to the ID
 # this removed about 5% of rushing plays
@@ -163,11 +181,11 @@ game_count <- qb_passes %>%
   filter(n > 5) %>%
   pull(id)
  
-# dropped from x to 145 players
+# dropped from 145 to 136 players
 qb_passes <- qb_passes %>%
   filter(id %in% game_count) 
 
-# 872 to 134 players
+# 838 to 122 players
 qb_rushes <- qb_rushes %>%
   filter(id %in% game_count) 
 ```
@@ -272,19 +290,6 @@ qb_passes_per_dropback <- qb_passes_per_dropback %>%
 ```
 
 ### Adding Roster Data
-
-```{r height_function}
-height_to_cm <- function(x) {
-  # this is to convert a character string of height to cm
-  # e.g. "6-4" will convert to 193.04 as a numerical
-  
-  #can cheat here since it is unlikely that 10 feet will be used
-  feet = substr(x, 1, 1) %>% as.numeric()
-  inches = substr(x, 3, 4) %>% as.numeric()
-  cm = (feet * 30.48) + (inches * 2.54)
-  return(cm)
-}
-```
 
 ```{r}
 #renaming it so the join is easier
