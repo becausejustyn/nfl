@@ -464,7 +464,6 @@ penguins %>%
   prcomp() %>%  
   .$rotation
 
-
 X <- qb_passes_per_dropback %>% select(where(is.numeric))
 
 prin_comp <- prcomp(X, scale. = TRUE)

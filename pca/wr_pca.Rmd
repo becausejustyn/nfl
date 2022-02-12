@@ -65,9 +65,16 @@ ngs_receiving_week <- ngs_receiving %>%
 ngs_receiving_season <- ngs_receiving %>%
   filter(week == 0) %>%
   select(-week) %>%
-  left_join(rosters) %>%
+  left_join(rosters, by = c("player_gsis_id" = "gsis_id", "season" = "season")) %>%
   mutate(player_label = paste0(player_display_name, ", ", season)) %>%
   distinct(player_label, .keep_all = TRUE)
+
+write_rds(ngs_receiving_season, "ngs_receiving_season.rds")
+
+
+ngs_receiving_season <- ngs_receiving_season %>%
+  left_join(rosters, by = c("player_gsis_id" = "gsis_id", "season" = "season")) 
+
 ```
 
 
@@ -93,31 +100,48 @@ write_rds(ngs_receiving_week, "ngs_receiving_week.rds")
 ```
 
 ```{r}
-pbp <- purrr::map_df(c(2016:2021), function(x) {
-  read_rds(
-    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+ngs_receiving_week <- read_rds("~/Documents/Github/nfl/pca/ngs_receiving_week.rds")
+ngs_receiving_season <- read_rds("~/ngs_receiving_season.rds")
+rec_stats <- read_rds("~/Desktop/rec_stats_full.rds")
+rec_stats2 <- read_rds("~/wr_stats_full1.rds")
+rec_stats3 <- read_rds("~/wr_stats_full2.rds")
+```
+
+```{r}
+rec_stats %>% names()
+```
+
+```{r}
+wr_stats <- ngs_receiving_season %>%
+  left_join(
+    rec_stats3, by = c("player_gsis_id" = "receiver_id", "position" = "position", "season" = "season")
   )
-}) %>%
-  filter(season_type == 'REG')
 
-pbp <- select(pbp, !contains(c('tackle', 'kicker', 'sack', 'fumble', 'punt', 'kick', 'drive_', 'lateral', 'safety', 'timeouts', 'two_point', 'field_goal')))
+wr_stats <- wr_stats %>% select(-c(posteam, team, player_short_name, player_jersey_number, player_last_name, player_first_name))
 
+write_rds(wr_stats, "rec_stats.rds")
+```
+
+
+```{r}
+rec_stats3
+
+ngs_receiving_season %>%
+  inner_join(
+    rec_stats3, by = c("player_gsis_id" = "receiver_id", "season" = "season")
+  )
 ```
 
 ```{r}
-
+ngs_receiving_season
 ```
 
 ```{r}
+#see if you can match them
 
-```
-
-```{r}
-
-```
-
-```{r}
-
+ngs_receiving_season %>%
+  group_by(season) %>%
+  filter(gsis_id %in% rec_stats3[["receiver_id"]])
 ```
 
 ```{r}

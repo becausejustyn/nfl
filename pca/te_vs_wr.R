@@ -27,7 +27,7 @@ tidied_pca %>%
 library(tidytext)
 
 tidied_pca %>%
-  filter(component %in% paste0("PC", 1:6)) %>%
+  filter(component %in% paste0("PC", 1:4)) %>%
   group_by(component) %>%
   top_n(8, abs(value)) %>%
   ungroup() %>%
