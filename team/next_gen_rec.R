@@ -3,41 +3,44 @@
 source("https://raw.githubusercontent.com/leesharpe/nfldata/master/code/plays-functions.R")
 
 # load NGS Dataset
-NGS_rec_total <- read_csv("ngs_receiving_2019_overall.csv")
+ngs_receiving <- read_rds("~/Documents/nfl/data/ngs/ngs_receiving.rds")
+
 
 # compute the dataframe for first plot
-NGS_total_p1 <- NGS_rec_total %>%
-  apply_colors_and_logos() %>%
-  select(-X1) %>%
-  arrange(desc(shareOfTeamAirYards)) %>%
-  filter(row_number() <= 40)
+ngs_total_p1 <- ngs_receiving %>%
+  filter(week == 0, season == 2021) %>%
+  arrange(desc(percent_share_of_intended_air_yards)) %>%
+  filter(row_number() <= 40) %>%
+  left_join(nflfastR::teams_colors_logos, by = c("team_abbr"))
 
 # compute the dataframe for second plot
-NGS_total_p2 <- NGS_rec_total %>%
-  apply_colors_and_logos() %>%
-  select(-X1) %>%
-  arrange(desc(avgYACAboveExpectation)) %>%
-  filter(row_number() <= 32)
+ngs_total_p2 <- ngs_receiving %>%
+  filter(week == 0, season == 2021) %>%
+  arrange(desc(avg_yac_above_expectation)) %>%
+  filter(row_number() <= 32) %>%
+  left_join(nflfastR::teams_colors_logos, by = c("team_abbr"))
 
 # create the first plot
-p1 <-
-  NGS_total_p1 %>%
-  ggplot(aes(x = shareOfTeamAirYards / 100, y = avgYACAboveExpectation)) +
-  geom_point(aes(cex = targets),
-             alpha = 0.5,
-             color = NGS_total_p1$use_color) +
-  geom_vline(aes(xintercept = mean(shareOfTeamAirYards / 100)), 
+p1 <- ngs_total_p1 %>%
+  ggplot(aes(
+    x = percent_share_of_intended_air_yards / 100, 
+    y = avg_yac_above_expectation)) +
+  geom_point(aes(
+    cex = targets, colour = team_color),
+    alpha = 0.5) +
+  geom_vline(aes(xintercept = mean(percent_share_of_intended_air_yards / 100)), 
              color = "red", linetype = "dotted") +
-  geom_hline(aes(yintercept = mean(avgYACAboveExpectation)), 
+  geom_hline(aes(yintercept = mean(avg_yac_above_expectation)), 
              color = "red", linetype = "dotted") +
   geom_hline(yintercept = 0, size = 0.25) +
-  ggrepel::geom_text_repel(aes(label = shortName)) +
+  ggrepel::geom_text_repel(aes(label = player_short_name)) +
   scale_x_continuous(labels = scales::percent, limits = c(NA, NA)) +
   scale_size("Number of Targets") +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
   labs(
     x = "Players Share of His Team’s Total Intended Air Yards",
     y = "Average Yards after Catch above Expectation",
-    title = "Receiving Performance 2019 Regular Season",
+    title = "Receiving Performance 2021 Regular Season",
     subtitle = "Next Gen Receiving Stats for Receivers (WR+TE) with Top 40 Target Share"
   ) +
   ggthemes::theme_stata(scheme = "sj", base_size = 10) +
@@ -54,26 +57,27 @@ p1 <-
     legend.position = "top"
   )
 
+ggsave(p1, path = "plots", filename = "rec_yac_air_yard.png", dpi = 600)
+
 # create the second plot
-p2 <-
-  NGS_total_p2 %>%
-  ggplot(aes(x = 1:nrow(NGS_total_p2), y = avgYACAboveExpectation)) +
-  geom_col(
-    colour = NGS_total_p2$use_color,
-    fill = NGS_total_p2$use_color,
-    alpha = 0.4,
-    width = NGS_total_p2$shareOfTeamAirYards / 60
+p2 <- ngs_total_p2 %>%
+  ggplot(aes(x = 1:nrow(ngs_total_p2), y = avg_yac_above_expectation)) +
+  geom_col(aes(
+    colour = team_color, fill = team_color, 
+    width = percent_share_of_intended_air_yards / 60),
+    alpha = 0.4
   ) +
   geom_text(
-    aes(label = playerName, y = avgYACAboveExpectation + 0.05),
+    aes(label = player_display_name, y = avg_yac_above_expectation + 0.05),
     angle = 90,
     hjust = 0
   ) +
   scale_size("Number of Targets") +
+  scale_color_identity(aesthetics = c('fill', 'colour')) +
   labs(
     x = "Rank",
     y = "Average Yards after Catch above Expectation",
-    caption = "Figure: @mrcaseb | Data: @NextGenStats",
+    caption = "Data: @NextGenStats",
     subtitle = "Top 32 Receivers (WR+TE) in Average Yards after Catch above Expectation (Column Width Corresponds to Target Share)"
   ) +
   ylim(NA, 5.7) +

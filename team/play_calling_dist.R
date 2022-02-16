@@ -1,44 +1,39 @@
 ### Playcalling Distribution
 
-source("https://raw.githubusercontent.com/leesharpe/nfldata/master/code/plays-functions.R")
 library(colortools)
 
 # load nflscrapR dataset
-pbp <- readRDS("data/pbp") %>%
-  filter(season == 2019)
+pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds")
 
 # collect all rushplays incl. penalties
 rushplays <- pbp %>%
   filter(rush == 1 & play == 1)
 
 # summary to plot correct means in the facet
-rushsummary <-
-  rushplays %>%
+rushsummary <- rushplays %>%
   group_by(posteam) %>%
-  summarize(wpmean = mean(wp)) %>%
-  apply_colors_and_logos()
+  summarise(wpmean = mean(wp)) %>%
+  left_join(nflfastR::teams_colors_logos, by = c("posteam" = "team_abbr"))
 
 # collect all passplays incl. penalties
-passplays <- pbp %>%
-  filter(pass == 1 & play == 1)
+passplays <- filter(pbp, pass == 1 & play == 1)
 
 # summary to plot correct means in the facet
-passsummary <-
-  passplays %>%
+passsummary <- passplays %>%
   group_by(posteam) %>%
-  summarize(wpmean = mean(wp)) %>%
-  apply_colors_and_logos()
+  summarise(wpmean = mean(wp)) %>%
+  left_join(nflfastR::teams_colors_logos, by = c("posteam" = "team_abbr"))
 
 col <- splitComp("blue")
 
-ggplot(NULL, aes(x = wp)) +
+p1 <- ggplot(NULL, aes(x = wp)) +
   geom_vline(data = passsummary, aes(xintercept = wpmean), color = col[1], linetype = "dashed") +
   geom_vline(data = rushsummary, aes(xintercept = wpmean), color = col[2], linetype = "dashed") +
   stat_density(data = rushplays, geom = "line", position = "identity", size = .3, aes(color = col[2])) +
   stat_density(data = passplays, geom = "line", position = "identity", size = .3, aes(color = col[1])) +
   geom_density(data = rushplays, alpha = .3, color = col[2], fill = col[2]) +
   geom_density(data = passplays, alpha = .3, color = col[1], fill = col[1]) +
-  geom_image(data = passsummary, aes(x = .1, y = 1.8, image = team_logo), size = .15, by = "width", asp = 1) +
+  geom_image(data = passsummary, aes(x = .1, y = 1.8, image = team_logo_espn), size = .15, by = "width", asp = 1) +
   xlim(0, 1) +
   scale_colour_identity(
     name = "Playtype",
@@ -49,7 +44,7 @@ ggplot(NULL, aes(x = wp)) +
   labs(
     x = "",
     y = "",
-    caption = "Figure: @mrcaseb | Data: @nflscrapR",
+    caption = "Data: nflfastR",
     title = "Playcalling 2019 Regular Season",
     subtitle = "Smoothed Distribution of Passing and Rushing Plays (x-Axis = Estimated win probability when calling the play)"
   ) +
@@ -69,3 +64,5 @@ ggplot(NULL, aes(x = wp)) +
     legend.position = "top"
   ) +
   facet_wrap(~posteam, ncol = 8, scales = "free_x")
+
+ggsave(p1, path = "plots", filename = "play_call_dist.png", dpi = 600)

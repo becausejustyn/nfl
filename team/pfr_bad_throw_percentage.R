@@ -4,6 +4,7 @@ library(ggthemes)
 library(ggrepel)
 library(scales)
 library(rvest)
+library(dplyr)
 
 # scrape data from PFR
 url <- "https://www.pro-football-reference.com/years/2021/passing_advanced.htm"
@@ -14,18 +15,18 @@ pfr_raw <- url %>%
 
 # clean the scraped data
 colnames(pfr_raw) <- make.names(pfr_raw[1,], unique = TRUE, allow_ = TRUE)
+
 pfr <- pfr_raw %>%
   slice(-1) %>%
-  select(Player, Tm, IAY.PA, Bad., Att) %>%
-  rename(team = Tm) %>%
+  select(Player, team = Tm, IAY.PA, Bad., Att) %>%
   mutate(
-    Player = str_replace(Player, "\\*", ""),
-    Player = str_replace(Player, "\\+", ""),
+    Player = stringr::str_replace(Player, "\\*", ""),
+    Player = stringr::str_replace(Player, "\\+", ""),
     IAY.PA = as.numeric(IAY.PA),
-    Bad. = as.numeric(str_replace(Bad., "%", "")),
+    Bad. = as.numeric(stringr::str_replace(Bad., "%", "")),
     Passattempts = as.numeric(Att)
   ) %>%
-  mutate(team = str_replace_all(team,
+  mutate(team = stringr::str_replace_all(team,
                                 c(
                                   "NOR" = "NO",
                                   "SFO" = "SF",
@@ -35,13 +36,14 @@ pfr <- pfr_raw %>%
                                   "GNB" = "GB"
                                 ))) %>%
   left_join(select(nflfastR::teams_colors_logos, team = team_abbr, contains('_color'))) %>%
-  #apply_colors_and_logos() %>%
-  filter(Passattempts>180) %>%
+  filter(Passattempts > 180) %>%
   arrange(Bad.)
 
 # create the plot
-pfr %>%
-  ggplot(aes(x = IAY.PA, y = Bad. / 100)) +
+p1 <- pfr %>%
+  ggplot(aes(
+    x = IAY.PA, 
+    y = Bad. / 100)) +
   geom_hline(aes(yintercept = mean(Bad. / 100)), color = "red", linetype = "dotted") +
   geom_vline(aes(xintercept = mean(IAY.PA)), color = "red", linetype = "dotted") +
   geom_smooth(method = "lm", se = FALSE, color = "black", size = 0.3) +
@@ -65,3 +67,5 @@ pfr %>%
     plot.caption = element_text(size = 10, hjust = 1),
     legend.position = "right"
   )
+
+ggsave(p1, path = "plots", filename = "qb_bad_throw_adot.png", dpi = 600)
