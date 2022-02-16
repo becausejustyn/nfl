@@ -1,17 +1,9 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
-```{r}
 library(tidyverse)
 library(nflfastR)
 library(ggimage)
 library(gt)
 library(ggthemes)
-```
 
-```{r}
 pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
   filter(season_type == 'REG') %>%
   filter(
@@ -19,59 +11,8 @@ pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
       special_teams_play == 0 & 
       is.na(st_play_type) & 
       !play_type %in% NA
-    ) %>% 
-  select(
-    game_id, week, posteam, yardline_100, down, 
-    ydstogo, ydsnet, play_type, play_type_nfl, 
-    pass, rush, yards_gained, pass_length, pass_location, 
-    fourth_down_converted, fourth_down_failed, first_down, 
-    xpass, pass_oe, run_gap, run_location)
-```
-
-# Pass Rate Over Expected
-
-```{r pass_oe_df}
-pass_oe <- pbp %>%
-  filter(!is.na(pass_oe)) %>%
-  group_by(posteam) %>%
-  summarise(
-    pass_oe = mean(pass_oe),
-    xpass = mean(xpass),
-    pass = mean(pass)
-  ) %>% 
-  left_join(
-    nflfastR::teams_colors_logos %>% 
-      select(team_abbr, team_color, team_color2, team_color3, team_color4), 
-    by = c("posteam" = "team_abbr"))
-
-#pass_oe %>% summarise(across(c(pass_oe:pass), range)) #ranges for plotting
-
-pass_oe_plot <- pass_oe %>%
-  ggplot() +
-  geom_col(
-    aes(x = pass_oe, y = fct_reorder(posteam, pass_oe),
-        fill = team_color, colour = team_color2), alpha = 0.6, width = 0.9, size = 0.5
-  ) +
-  scale_x_continuous(breaks = seq(-8, 10, 1)) + 
-  coord_cartesian(xlim = c(-8, 10)) +
-  scale_color_identity(aesthetics = c('fill', 'colour')) +
-  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
-  labs(
-    x = '',
-    y = '',
-    title = 'Pass Rate Over Expected by Team',
-    subtitle = '2021, Regular Season',
-    caption = 'data: nflfastr'
   )
-```
 
-```{r pass_oe_plot}
-pass_oe_plot
-```
-
-# By Conference
-
-```{r}
 pbp_rp <- pbp %>%
   filter(pass == 1 | rush == 1) 
 
@@ -101,12 +42,10 @@ proe_season <- pbp_rp %>%
     division = as_factor(division),
     conference = as_factor(conference)
   )
-```
 
 ## NFC Pass Rate Over Expected
 
-```{r}
-proe_season %>%
+p1 <- proe_season %>%
   filter(conference == "NFC") %>%
   ggplot(aes(x = week, y = proe)) +
   geom_bar(aes(
@@ -129,12 +68,14 @@ proe_season %>%
     panel.grid.major.x = element_line(size = 0.1),
     strip.text.x = element_text(size = 14)
   )
-```
+
+ggsave(p1, path = "plots", filename = "nfc_pass_rate_o_exp.png", dpi = 600)
+
+
 
 ## AFC Pass Rate Over Expected
 
-```{r}
-proe_season %>%
+p2 <- proe_season %>%
   filter(conference == "AFC") %>%
   ggplot(aes(x = week, y = proe)) +
   geom_bar(aes(
@@ -157,33 +98,5 @@ proe_season %>%
     panel.grid.major.x = element_line(size = 0.1),
     strip.text.x = element_text(size = 14)
   )
-```
 
-## AFC East and NFC East
-
-```{r}
-proe_season %>%
-  filter(division %in% c("NFC East", "AFC East")) %>%
-  ggplot(aes(x = week, y = proe)) +
-  geom_bar(aes(
-    fill = team_color, color = team_color2), 
-    stat = "identity", alpha = 0.9) +
-  scale_color_identity(aesthetics = c("fill", "color")) +
-  facet_wrap(.~division + posteam, ncol = 4) +  
-  scale_x_continuous(breaks = seq(1, 18, 2)) +
-  tomtom::theme_538() +
-  labs(
-    x = "Week",
-    y = "Pass Rate Over Expected",
-    title = "Pass Rate Over Expected AFC and NFC East, 2021",
-    caption = "data: nflfastr | @becausejustyn"
-  ) +
-  theme(
-    plot.title = element_text(size = 18, hjust = 0.5, face = "bold"),
-    plot.subtitle = element_text(size = 14, hjust = 0.5),
-    axis.text = element_text(size = 13),
-    panel.grid.major.x = element_line(size = 0.1),
-    strip.text.x = element_text(size = 14)
-  )
-```
-
+ggsave(p2, path = "plots", filename = "afc_pass_rate_o_exp.png", dpi = 600)

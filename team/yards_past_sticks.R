@@ -1,9 +1,3 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
-```{r}
 library(tidyverse)
 library(ggimage)
 library(ggrepel)
@@ -11,46 +5,41 @@ library(scales)
 
 pbp <- purrr::map_df(2021, function(x) {
   read_rds(
-      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
-    )
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
 }) %>%
   filter(season_type == 'REG')
-```
 
 ### Each Team's Yards Past Sticks and YAC on 2nd and 3rd Down
 
-```{r}
 pbp_rp <- pbp %>%
   filter(
     !is.na(epa),
     rush == 1 | pass == 1
-    ) 
+  ) 
 
 teams <- pbp %>%
   group_by(posteam, pass) %>%
   summarise(epa = mean(epa)) 
 
 #teams %>% group_by(pass) %>% summarise(league_avg = mean(epa, na.rm = TRUE))
-```
 
-```{r}
 yards_past_sticks <- pbp_rp %>%
   mutate(yards_past_sticks = air_yards - ydstogo) %>%
   filter(
     !is.na(yards_past_sticks),
     down %in% c(2, 3)
-    ) %>%
+  ) %>%
   group_by(posteam) %>%
   summarise(
     avg_yps = mean(yards_past_sticks, na.rm = TRUE),
     yps_rate = 100*mean(yards_past_sticks >= 0),
     yac = mean(yards_after_catch, na.rm = TRUE)
-    ) %>%
+  ) %>%
   left_join(nflfastR::teams_colors_logos, by = c("posteam" = "team_abbr"))
-```
 
-```{r}
-yards_past_sticks %>%
+
+p1 <- yards_past_sticks %>%
   ggplot(aes(
     x = avg_yps, 
     y = yac,
@@ -73,7 +62,5 @@ yards_past_sticks %>%
   scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
   tomtom::theme_538() 
-```
 
-
-
+ggsave(p1, path = "plots", filename = "yards_past_sticks.png", dpi = 600)

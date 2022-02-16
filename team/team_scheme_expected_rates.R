@@ -1,51 +1,41 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
-```{r}
 library(tidyverse)
 library(ggimage)
 
 pbp <- purrr::map_df(2021, function(x) {
   read_rds(
-      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
-    )
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
 })
-```
 
 ### Data Wrangling
 
-```{r}
-expected_pass_stats <- pbp %>%
+expected_pass_stats <- pbp %>% 
   filter(
     xpass > 0.60, 
     pass == 1 | rush == 1
-    ) %>%
+  ) %>%
   group_by(posteam) %>%
   summarise(xp_pass_rate = mean(pass))
 
-expected_run_stats <- pbp %>%
+expected_run_stats <- pbp %>% 
   filter(
     xpass < 0.40,
     pass == 1 | rush == 1
-    ) %>%
+  ) %>%
   group_by(posteam) %>%
   summarise(xr_run_rate = mean(rush))
 
 expected_stats <- expected_pass_stats %>%
   left_join(expected_run_stats) %>%
   left_join(select(nflfastR::teams_colors_logos, posteam = team_abbr, everything()))
-```
 
 ## Viz
 
-```{r}
-expected_stats %>%
+p1 <- expected_stats %>%
   ggplot(aes(
     x = xp_pass_rate, 
     y = xr_run_rate
-    )) +
+  )) +
   geom_hline(aes(yintercept = mean(xr_run_rate)), linetype = "dashed") +
   geom_vline(aes(xintercept = mean(xp_pass_rate)), linetype = "dashed") +
   geom_image(aes(image = team_logo_espn), asp = 16/9, size = 0.05) +
@@ -61,5 +51,5 @@ expected_stats %>%
   annotate("text", x = 0.77, y = 0.6, label = "Run Unpredictable \n Pass Unpredictable") +
   annotate("text", x = 0.91, y = 0.84, label = "Run Predictable \n Pass Predictable") +
   annotate("text", x = 0.91, y = 0.6, label = "Run Unpredictable \n Pass Unpredictable")
-```
 
+ggsave(p1, path = "plots", filename = "offense_scheme.png", dpi = 600)

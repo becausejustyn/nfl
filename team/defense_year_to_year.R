@@ -1,38 +1,31 @@
----
-title: "R Notebook"
-output: html_notebook
----
 
-```{r}
 library(tidyverse)
 library(ggbeeswarm)
-```
 
-```{r}
-pbp <- purrr::map_df(c(2011:2021), function(x) {
+pbp <- purrr::map_df(c(2001:2021), function(x) {
   readRDS(
-      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
-    )
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
 }) %>%
   filter(season_type == 'REG')
 
-rosters <- purrr::map_df(c(2011:2021), function(x) {
+rosters <- purrr::map_df(c(2001:2021), function(x) {
   readRDS(
-      glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
-    )
+    glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
+  )
 })
-```
+
 
 ## Defense Year to Year
 
 ### Good
 
-```{r}
+
 defenses <- pbp %>%
   filter(
     !is.na(epa),
     !is.na(defteam)
-    ) %>%
+  ) %>%
   group_by(defteam, season) %>%
   summarise(def_epa = mean(epa)) %>%
   arrange(def_epa) %>%
@@ -43,17 +36,17 @@ defenses <- pbp %>%
   group_by(defteam) %>%
   mutate(next_season_rank = lead(season_rank)) %>%
   filter(season_rank <= 5)
-```
 
 
-```{r}
-defenses %>%
+
+
+p1 <- defenses %>%
   filter(season < 2021) %>%
   ggplot(aes(
     x = season, 
     y = next_season_rank, 
     fill = next_season_rank
-    )) +
+  )) +
   ggbeeswarm::geom_quasirandom(pch = 21, size = 7, width = 0.1) +
   #viridis::scale_fill_viridis("", guide = FALSE) +
   scale_fill_viridis_b("", guide = "none") +
@@ -64,22 +57,27 @@ defenses %>%
     title = "Where Top 5 Defense ranks the year after",
     subtitle = "2011-2020, determined by EPA/Play",
     x = "Season", 
-    y = "Next Season Rank"
-    ) +
+    y = "Next Season Rank",
+    caption = "data: nflfastR"
+  ) +
   scale_x_continuous(breaks = scales::pretty_breaks(n = 8)) +
-  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
-```
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  hrbrthemes::theme_ft_rc()
+
+
+ggsave(p1, path = "plots", filename = "top_d_following_year.png", dpi = 600)
+
 
 
 ### Bad Defenses
 
-```{r}
+
 bad_defenses <- pbp %>%
   filter(
     !is.na(epa),
     !is.na(defteam),
     pass == 1 | rush == 1
-    ) %>%
+  ) %>%
   group_by(defteam, season) %>%
   summarise(def_epa = mean(epa)) %>%
   arrange(def_epa) %>%
@@ -90,24 +88,32 @@ bad_defenses <- pbp %>%
   group_by(defteam) %>%
   mutate(next_season_rank = lead(season_rank)) %>%
   filter(season_rank > 27)
-```
 
-```{r}
-bad_defenses %>%
+
+
+p2 <- bad_defenses %>%
   filter(season < 2021) %>%
   ggplot(aes(
     x = season, 
     y = next_season_rank, 
     fill = next_season_rank
-    )) +
+  )) +
   geom_quasirandom(pch = 21, size = 7, width = 0.1) +
   viridis::scale_fill_viridis("", guide = "none") +
   tomtom::theme_538() +
   geom_hline(yintercept = 28, linetype = "dashed") +
   geom_hline(yintercept = 16, linetype = "dashed") +
-  labs(title = "Where bottom 5 Defense ranks the year after",
-  subtitle = "2011-2021, determined by EPA/Play",
-  x = "Season", y = "Next Season Rank") +
+  labs(
+    title = "Where bottom 5 Defense ranks the year after",
+    subtitle = "2011-2021, determined by EPA/Play",
+    x = "Season", 
+    y = "Next Season Rank",
+    caption = "data: nflfastR"
+  ) +
   scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
-  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
-```
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  hrbrthemes::theme_ft_rc()
+
+
+ggsave(p2, path = "plots", filename = "bottom_d_following_year.png", dpi = 600)
+

@@ -1,21 +1,10 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
-```{r}
 library(tidyverse)
 library(nflfastR)
 library(scales)
-#devtools::install_github("jthomasmock/tomtom")
 
 pbp <- load_pbp(seasons = 2021) %>%
   filter(season_type == 'REG')
 
-#write_rds(pbp, "pbp_2021.rds")
-```
-
-```{r}
 # run vs pass Yards per play
 rush_v_pass <- pbp %>% 
   filter(play_type %in% c("run", "pass"), penalty == 0) %>% 
@@ -40,11 +29,9 @@ rush_v_pass <- bind_rows(rush_v_pass, nfl_rvp) %>%
     play_type,
     levels = c("pass", "run"),
     labels = c("Pass", "Rush")
-    ))
-```
+  ))
 
-```{r}
-ggplot(rush_v_pass) +
+p1 <- ggplot(rush_v_pass) +
   geom_bar(aes(
     x = fct_reorder(posteam, avg_yds), 
     y = avg_yds, 
@@ -61,13 +48,12 @@ ggplot(rush_v_pass) +
     axis.text.x = element_text(angle = 0, hjust = 1, vjust = 0),
     axis.line = element_blank(),
     axis.ticks.x = element_blank()
-    ) +
+  ) +
   hrbrthemes::theme_ft_rc() +
   theme(legend.position = "bottom")
-```
 
+ggsave(p1, path = "plots", filename = "average_yards.png", dpi = 600)
 
-```{r}
 # seperating the pass and rush yard columns
 
 rush_v_pass_sep <- rush_v_pass %>%
@@ -75,10 +61,8 @@ rush_v_pass_sep <- rush_v_pass %>%
     names_from = play_type,
     values_from = avg_yds
   )
-```
 
-```{r}
-rush_v_pass_sep %>%
+p2 <- rush_v_pass_sep %>%
   arrange(Pass) %>%
   mutate(posteam = fct_inorder(posteam)) %>%
   ggplot() +
@@ -98,15 +82,14 @@ rush_v_pass_sep %>%
   # add the text (%) for each male success rate
   geom_text(aes(
     x = Rush, y = posteam, label = paste0(round(Rush, 1))),
-            col = "black") +
+    col = "black") +
   # add the text (%) for each female success rate
   geom_text(aes(
     x = Pass, y = posteam, label = paste0(round(Pass, 1))),
-            col = "white")
-```
+    col = "white")
 
+ggsave(p2, path = "plots", filename = "average_yards_v2.png", dpi = 600)
 
-```{r}
 # adding team and nfl colours, changing the NJY colours so you can see
 
 rush_v_pass_sep <- rush_v_pass_sep %>%
@@ -116,10 +99,8 @@ rush_v_pass_sep <- rush_v_pass_sep %>%
     team_color2 = replace_na(team_color2, "#e0e0e0")
   ) %>%
   mutate(across(team_color2, str_replace, "#1c2d25", "#e0e0e0"))
-```
 
-```{r}
-rush_v_pass_sep1 %>%
+p3 <- rush_v_pass_sep %>% #rush_v_pass_sep
   arrange(Pass) %>%
   mutate(posteam = fct_inorder(posteam)) %>%
   ggplot() +
@@ -147,17 +128,11 @@ rush_v_pass_sep1 %>%
     panel.grid.minor = element_line(colour = NA),
     panel.background = element_rect(fill = NA),
     plot.background = element_rect(size = 0)
-    ) 
-```
+  ) 
 
-```{r}
+ggsave(p1, path = "plots", filename = "average_yards_v3.png", dpi = 600)
 
-```
-
-
-
-```{r}
-rush_v_pass_sep1 %>%
+p4 <- rush_v_pass_sep %>%
   arrange(Pass) %>%
   mutate(posteam = fct_inorder(posteam)) %>%
   ggplot() +
@@ -185,6 +160,7 @@ rush_v_pass_sep1 %>%
     panel.grid.minor = element_line(colour = NA),
     panel.background = element_rect(fill = NA),
     plot.background = element_rect(size = 0)
-    ) +
+  ) +
   tomtom::theme_538()
-```
+
+ggsave(p4, path = "plots", filename = "average_yards_v4.png", dpi = 600)

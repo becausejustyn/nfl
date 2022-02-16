@@ -1,17 +1,7 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
-Passing Tiers
-
-```{r}
 library(nflplotR)
 library(nflreadr)
 library(tidyverse)
-```
 
-```{r nfl_tiers_df}
 pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
   dplyr::filter(season_type == "REG") %>%
   dplyr::filter(!is.na(posteam) & (rush == 1 | pass == 1))
@@ -39,10 +29,8 @@ qbs <- pbp %>%
   ) %>%
   dplyr::filter(plays > 200) %>%
   dplyr::slice_max(qb_epa, n = 10)
-```
 
-```{r nfl_tiers_plot}
-nfl_tiers_plot <- ggplot2::ggplot(combined, aes(x = off_epa, y = def_epa)) +
+p1 <- nfl_tiers_plot <- ggplot2::ggplot(combined, aes(x = off_epa, y = def_epa)) +
   ggplot2::geom_abline(slope = -1.5, intercept = seq(0.4, -0.3, -0.1), alpha = .2, colour = "white") +
   nflplotR::geom_mean_lines(aes(v_var = off_epa , h_var = def_epa)) +
   nflplotR::geom_nfl_logos(aes(team_abbr = team), width = 0.065, alpha = 0.7) +
@@ -58,9 +46,8 @@ nfl_tiers_plot <- ggplot2::ggplot(combined, aes(x = off_epa, y = def_epa)) +
     plot.title.position = "plot"
   ) +
   ggplot2::scale_y_reverse()
-```
 
-```{r}
-nfl_tiers_plot
-```
+ggsave(p1, path = "plots", filename = "passing_tiers.png", dpi = 600)
+
+
 

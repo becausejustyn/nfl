@@ -1,11 +1,5 @@
----
-title: "R Notebook"
-output: html_notebook
----
-
 ## Loading Libraries, Data
 
-```{r libraries, reading data}
 library(beeswarm) 
 library(ggbeeswarm)
 library(tidyverse)
@@ -13,25 +7,21 @@ library(scales)
 
 pbp <- purrr::map_df(c(2001:2021), function(x) {
   readRDS(
-      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
-    )
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
 }) %>%
   filter(season_type == 'REG')
-```
-
-## Wrangling the Data
 
 ### Play Count By Team, Season, Down
-```{r}
+
 df <- pbp %>%
   filter(down == 4, ydstogo <= 4, play_type %in% c("field_goal", "pass", "punt", "run")) %>%
   group_by(posteam, season, ydstogo) %>%
   count(play_type) %>%
   ungroup()
-```
 
 ### Wide Version
-```{r}
+
 df_wide <- df %>%
   spread(play_type, n) %>%
   group_by(posteam, season, ydstogo) %>%
@@ -41,10 +31,9 @@ df_wide <- df %>%
     go_for_it_rate = go_for_it_n / opportunities
   ) %>%
   ungroup()
-```
 
 ### Team By Season
-```{r}
+
 df_wide_season <- df_wide %>%
   group_by(posteam, season) %>%
   summarise(
@@ -58,10 +47,9 @@ df_wide_season <- df_wide %>%
     .groups = "drop"
   ) %>%
   left_join(select(nflfastR::teams_colors_logos, posteam = team_abbr, team_color, team_color2))
-```
 
 ### Team Overall
-```{r}
+
 df_wide_team <- df_wide_season %>%
   select(-c(season, team_color, team_color2)) %>%
   group_by(posteam) %>%
@@ -73,33 +61,35 @@ df_wide_team <- df_wide_season %>%
   ) %>%
   ungroup() %>%
   left_join(select(nflfastR::teams_colors_logos, posteam = team_abbr, team_color, team_color2))
-```
 
 ## Viz
 
 ### League Wide Go For It Rate
 
-```{r}
-df_wide_season %>% 
+p1 <- df_wide_season %>% 
   ggplot(aes(
     x = season, 
     y = go_for_it_rate, 
     fill = go_for_it_rate
-    )) + 
+  )) + 
   geom_quasirandom(pch = 21, size = 3) + 
   scale_fill_viridis_c("",  guide = 'none', option = 'E') + 
-  scale_x_continuous(labels = 2001:2021, breaks = 2001:2021) + 
+  scale_x_continuous(labels = paste0("'", substr(c(2001:2021), 3, 4)), breaks = 2001:2021) + 
   scale_y_continuous(labels = scales::percent) + 
-  labs(title = "Go-for-it rate, 4th-4 or less", y = "", x = "") +
+  labs(
+    title = "Go-for-it rate, 4th-4 or less", 
+    y = "", x = "",
+    caption = "data: nflfastR"
+  ) +
   hrbrthemes::theme_ft_rc()
-```
+
+ggsave(p1, path = "plots", filename = "league_go_for_it_rate.png", dpi = 600)
 
 ### Mean Go For It Rate
 
-I did this without doing a summary df just so I could get practice how to do it via ggplot2()
+#I did this without doing a summary df just so I could get practice how to do it via ggplot2()
 
-```{r}
-df_wide_season %>%
+p2 <- df_wide_season %>%
   ggplot(aes(
     x = forcats::fct_reorder(.f = posteam, .x = go_for_it_rate, .fun = mean),
     fill = team_color2,
@@ -122,12 +112,12 @@ df_wide_season %>%
     subtitle = '2001 - 2021, Regular Season',
     caption = '4th down and 4 yards or less. data: nflfastR'
   )
-```
+
+ggsave(p2, path = "plots", filename = "team_go_for_it_rate.png", dpi = 600)
 
 ### Mean Go For It Rate w/ Text
 
-```{r}
-df_wide_team %>%
+p3 <- df_wide_team %>%
   ggplot(aes(
     x = fct_reorder(posteam, go_for_it_rate),
     y = go_for_it_rate,
@@ -151,5 +141,5 @@ df_wide_team %>%
     subtitle = '2001 - 2021, Regular Season',
     caption = '4th down and 4 yards or less. data: nflfastR\n Number of the left is the n of chances.'
   )
-```
 
+ggsave(p2, path = "plots", filename = "team_go_for_it_rate_v2.png", dpi = 600)
