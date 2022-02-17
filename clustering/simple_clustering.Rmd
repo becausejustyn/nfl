@@ -23,13 +23,13 @@ df <- pbp %>%
 
 pass_stats <- df %>%
   filter(
-    !is.na(yards_gained) & !is.na(pass_oe) & pass == 1) %>% 
+    !is.na(yards_gained), !is.na(pass_oe), pass == 1) %>% 
   group_by(posteam) %>%
   summarise(pass_ypp = mean(yards_gained)) 
 
 run_stats <- df %>%
   filter(
-    !is.na(yards_gained) & rush == 1) %>% 
+    !is.na(yards_gained), rush == 1) %>% 
   group_by(posteam) %>% 
   summarise(run_ypp = mean(yards_gained))
 
@@ -47,84 +47,82 @@ pass_run_stats <- pass_run_stats %>%
 ```
 
 ```{r}
-set.seed(2017) # reproducibility
-MAX_K <- 20 # max number of clusters
-sse <- c() # vector to hold SSE of each model
+pass_run_scaled <- pass_run_stats %>%
+  mutate(across(contains(c('_ypp', 'pass_minus')), ~ as.numeric(scale(.))))
 
-X <- pass_run_stats %>%
-  select(pass_ypp, run_ypp, pass_minus_run)
+kclusts <- tibble(k = 1:9) %>%
+  mutate(
+    kclust = purrr::map(k, ~ kmeans(select(pass_run_scaled, contains(c('_ypp', 'pass_minus'))), .x)),
+    glanced = purrr::map(kclust, glance),
+  )
 
-for (k in 1:MAX_K) {
-  algo_k <- kmeans(X, centers = k, nstart = 1, iter.max = 32) # k-means algorithm
-  sse <- c(sse, algo_k$tot.withinss) # get SSE
-} 
-```
+kclusts %>%
+  unnest(cols = c(glanced)) %>%
+  ggplot(aes(k, tot.withinss)) +
+  geom_line(alpha = 0.5, size = 1.2, color = "midnightblue") +
+  geom_point(size = 2, color = "midnightblue") +
+  scale_x_continuous(breaks = seq(1, 9, 1))
 
-```{r}
-#seeing the rolling SEE
-tibble(
-  k = 1:MAX_K, 
-  SSE_difference = sse - 2 * lead(sse) + lead(sse, 2)) %>%
-  dplyr::filter(k < MAX_K - 1) %>%
+kclusts %>%
+  unnest(cols = c(glanced)) %>%
+  mutate(
+    sse_difference = rolling_see_difference(tot.withinss)
+  ) %>%
   ggplot(aes(
     x = k, 
-    y = SSE_difference)) + 
-  geom_point(color = "#F84C1E") + 
-  geom_line(color = "#232D4B") + 
-  labs(
-    x = "K", 
-    y = "SSE Rolling 2-Unit Difference", 
-    title = "A Clear Picture") + 
-  scale_x_continuous(breaks = seq(1, MAX_K, 1)) + 
-  theme_minimal() +
-  theme(
-    panel.grid.minor.x = element_blank(), 
-    panel.grid.minor.y = element_blank())
+    y = sse_difference)) +
+    geom_line(alpha = 0.5, size = 1.2, color = "midnightblue") +
+    geom_point(size = 2, color = "midnightblue") +
+    scale_x_continuous(breaks = seq(1, 9, 1)) +
+    labs(
+      x = "k",
+      y = "SSE Rolling 2-Unit Difference"
+    )
 ```
 
 ```{r}
+#4 seems like a fun idea
 set.seed(2017)
-K <- 5
-kmeans5 <- kmeans(X, centers = K, nstart = 1, iter.max = 32)
-km_centers <- as.data.frame(kmeans5$centers)
+final_clust <- kmeans(select(pass_run_scaled, contains(c('_ypp', 'pass_minus'))), centers = 5)
 
-km_centers$Cluster <- c('Cluster 1', 'Cluster 2', 'Cluster 3',
-                        'Cluster 4', 'Cluster 5') 
+clust_cen <- final_clust %>% 
+  augment(pass_run_scaled) 
+#paste0("Cluster ", c(1:5)) 
+```
 
-km_centers <- km_centers %>%
-  rename(
-    c(
-      # give predictors a shorter name for plotting
-      'PYPP' = 'pass_ypp', 
-      'RYPP' = 'run_ypp', 
-      'DIFF' = 'pass_minus_run'
-    )) %>% 
+```{r}
+clust_cen_long <- clust_cen %>%
+  select(where(is.numeric), .cluster, -rank) %>%
+  rename(c(
+    'Pass YPP' = 'pass_ypp',
+    'Rush YPP' = 'run_ypp', 
+    'Pass Minus Rush' = 'pass_minus_run'
+  )) %>% 
   # pivot data to make plotting easier
   pivot_longer(
-    !Cluster, 
+    !.cluster, 
     names_to = 'feature', 
     values_to = 'z_val') 
 
-team_clusters <- tibble(
-  cluster = kmeans5$cluster, 
-  team = pass_run_stats$posteam)
+team_clusters <- select(clust_cen, posteam, .cluster)
 ```
 
+
 ```{r}
-km_centers %>% 
+clust_cen_long %>% 
   ggplot(aes(
     x = feature, 
     y = z_val, 
-    colour = Cluster)) + 
+    colour = .cluster)) + 
   geom_point() + 
   scale_color_brewer(palette = "Paired") + 
-  gghighlight(use_direct_label = FALSE) + # highlight each cluster
-  facet_wrap(~ Cluster, ncol=2) + # create seperate plots for each cluster
+  gghighlight(use_direct_label = FALSE) + 
+  facet_wrap(~ .cluster, ncol=2) + 
   labs(
     x = "Predictor", 
     y = "Cluster Center",
     title = "Visualizing K-Means Cluster Makeups") + 
-  theme_minimal() +
+  becausejustynfun::white_theme() +
   theme(
     legend.position = "none", 
     strip.text = element_text(face='bold'),
@@ -134,19 +132,19 @@ km_centers %>%
 
 ```{r}
 team_clusters <- team_clusters %>%
-  left_join(pass_run_stats, by = c("team" = "posteam"))
+  left_join(pass_run_stats)
 
 team_clusters %>%
   ggplot(aes(
     x = pass_ypp, 
     y = run_ypp)) +
-  geom_hline(yintercept = mean(team_clusters$run_ypp), color = "blue", linetype = "dashed", alpha = 0.5) +
-  geom_vline(xintercept =  mean(team_clusters$pass_ypp), color = "blue", linetype = "dashed", alpha = 0.5) +
-  geom_point(size = 3, color = team_clusters$cluster, alpha = .8) +
-  #add names using ggrepel, which tries to make them not overlap
-  geom_text_repel(aes(label = team)) +
+  geom_hline(aes(yintercept = mean(run_ypp)), colour = "blue", linetype = "dashed", alpha = 0.5) +
+  geom_vline(aes(xintercept =  mean(pass_ypp)), colour = "blue", linetype = "dashed", alpha = 0.5) +
+  geom_point(aes(color = .cluster), size = 3, alpha = .8) +
+  scale_color_manual(values = c('#009392', '#9ccb86', '#eeb479', '#B86C70', '#88CCEE')) +
+  geom_text_repel(aes(label = posteam), colour = team_clusters$team_color) +
   #add a smooth line fitting cpoe + epa
-  stat_smooth(geom = 'line', alpha = 0.5, se = FALSE, method = 'lm')+
+  stat_smooth(geom = 'line', alpha = 0.5, se = FALSE, method = 'lm') +
   #titles and caption
   labs(
     x = "Pass YPP",
@@ -155,7 +153,8 @@ team_clusters %>%
     caption = "By me") +
   #uses the black and white ggplot theme
   scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
-  scale_x_continuous(breaks = scales::pretty_breaks(n = 10))
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  becausejustynfun::white_theme() 
 ```
 
 

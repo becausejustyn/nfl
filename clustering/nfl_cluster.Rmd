@@ -1,6 +1,8 @@
 ---
 title: "R Notebook"
-output: html_notebook
+output: 
+  html_document: 
+    self_contained: no
 ---
 
 NFL Clustering
@@ -19,17 +21,11 @@ library(mdthemes)
 library(gghighlight)
 library(na.tools)
 library(gghighlight)
-
-theme_tej <- function() {
-  theme(axis.title = element_text(face='bold'), # make all axis titles bold
-        plot.title = element_text(face='bold', hjust=0.5, size = 20), # make all plot titles bold
-        legend.title = element_text(face='bold'), # make all legend titles bold
-        plot.subtitle = element_text(face='italic', hjust=0.5)) # make all subtitles italic
-}
+library(becausejustynfun)
 ```
 
 ```{r}
-pbp_20 <- purrr::map_df(2021, function(x) {
+pbp <- purrr::map_df(2021, function(x) {
   readRDS(
       glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
     )
@@ -37,8 +33,21 @@ pbp_20 <- purrr::map_df(2021, function(x) {
 ```
 
 ```{r}
-pbp_rp <- pbp_20 %>%
-  filter(!is.na(epa), play_type == "no_play" | play_type == "pass" | play_type == "run") %>%
+pbp_rp <- pbp %>% 
+  filter(pass == 1 | rush == 1) %>%
+  add_xpass() %>%
+  filter(!is.na(pass_oe)) %>%
+  mutate(
+    outside_run = ifelse(run_gap == "end", 1, 0),
+    inside_run = ifelse(!run_gap == "end", 1, 0),
+    yards_past_sticks = air_yards - ydstogo
+  )
+```
+
+
+```{r}
+pbp_rp <- pbp %>%
+  filter(!is.na(epa), play_type %in% c("no_play", "pass", "run")) %>%
   mutate(
     pass = if_else(str_detect(desc, "( pass)|(sacked)|(scramble)"), 1, 0),
     rush = if_else(str_detect(desc, "(left end)|(left tackle)|(left guard)|(up the middle)|(right guard)|(right tackle)|(right end)") & pass == 0, 1, 0),
@@ -73,139 +82,108 @@ team_stats <- pbp_rp %>%
 ```
 
 ```{r}
-no_team_name <- team_stats %>%
-  select(-plays, -posteam) %>%
-  scale()
+library(tidymodels)
 
-set.seed(222) # set seed to ensure reproduceability b/c k-means relies on random states for initialization
-MAX_K <- 20 # max number of clusters
-sse <- c() # vector to hold SSE of each model
+team_stats_clust <- team_stats %>%
+  mutate(across(proe_avg:yards_over_sticks, ~ as.numeric(scale(.))))
+
+kclusts <- tibble(k = 1:9) %>%
+  mutate(
+    kclust = purrr::map(k, ~ kmeans(select(team_stats_clust, -c(plays, posteam)), .x)),
+    glanced = purrr::map(kclust, glance),
+  )
+
+kclusts %>%
+  unnest(cols = c(glanced)) %>%
+  ggplot(aes(k, tot.withinss)) +
+  geom_line(alpha = 0.5, size = 1.2, color = "midnightblue") +
+  geom_point(size = 2, color = "midnightblue") +
+  scale_x_continuous(breaks = seq(1, 9, 1))
 ```
 
-```{r}
-for (k in 1:MAX_K) {
-  algo_k <- kmeans(no_team_name, centers=k, nstart=22, iter.max=20) # k-means algorithm
-  sse <- c(sse, algo_k$tot.withinss) # get SSE
-} 
-```
 
 ```{r}
-tibble(k = 1:MAX_K, SSE = sse) %>%
-  ggplot(aes(x=k, y=SSE)) + 
-  geom_point(color= "red") + geom_line(color="navy") + 
-  labs(x = "K", y = "SSE", title = "Where does this level off?") + 
-  scale_x_continuous(breaks=seq(1, MAX_K, 1)) + 
-  theme_minimal() 
-```
+rolling_see_difference <- function(x, n = 2){
+  x - n * lead(x) + lead(x, n)
+}
 
-```{r}
-tibble(
-  k = 1:MAX_K, 
-  SSE_difference = sse - 2 * lead(sse) + lead(sse, 2)
+kclusts %>%
+  unnest(cols = c(glanced)) %>%
+  mutate(
+    sse_difference = rolling_see_difference(tot.withinss)
   ) %>%
-  dplyr::filter(k < MAX_K - 1) %>%
-  ggplot(aes(x = k, y = SSE_difference)) + 
-  geom_point(color = "#F84C1E") + 
-  geom_line(color = "#232D4B") + 
-  labs(
-    x = "K", 
-    y = "SSE Rolling 2-Unit Difference", 
-    title = "A More Clear Picture"
-    ) + 
-  scale_x_continuous(breaks = seq(1, MAX_K, 1)) + 
-  theme_minimal()
+  ggplot(aes(
+    x = k, 
+    y = sse_difference)) +
+    geom_line(alpha = 0.5, size = 1.2, color = "midnightblue") +
+    geom_point(size = 2, color = "midnightblue") +
+    scale_x_continuous(breaks = seq(1, 9, 1)) +
+    labs(
+      x = "k",
+      y = "SSE Rolling 2-Unit Difference"
+    )
 ```
 
 ```{r}
 #It levels off at 6 K's
-set.seed(22)
+set.seed(2017)
+final_clust <- kmeans(select(team_stats_clust, -c(plays, posteam)), centers = 5)
 
-K <- 6
-kmeans6 <- kmeans(no_team_name, centers=K, nstart=22, iter.max=20)
-km_centers <- as.data.frame(kmeans6$centers) 
+clust_cen <- final_clust %>% augment(team_stats_clust) 
+#paste0("Cluster ", c(1:5)) 
 
-km_centers$cluster <- c('Cluster 1', 'Cluster 2', 'Cluster 3',
-                        'Cluster 4', 'Cluster 5', 'Cluster 6')
 ```
 
 ```{r}
-km_centers <- km_centers %>%
-  rename(c('PROE'='proe_avg', 'ORR'='outside_run_rate', 
-           'IRR'='inside_run_rate', 'YPA'='yards_per_attempt',
-           'YAC'='yac_avg', 'QBSR'='qb_scramble_rate',
-           'SaR'='qb_sack_rate', 'QBHR'='qb_hit_rate', 'FDPR'='first_down_pass_rate',
-           'YPS'='yards_over_sticks')) %>% 
-  pivot_longer(!cluster, names_to = 'feature', values_to = 'z_val')
+clust_cen_wide <- clust_cen %>%
+  rename(
+    PROE = proe_avg,
+    ORR = outside_run_rate, 
+    IRR = inside_run_rate, 
+    YPA = yards_per_attempt, 
+    YAC = yac_avg, 
+    QBSR = qb_scramble_rate, 
+    QBHR = qb_hit_rate, 
+    SaR = qb_sack_rate, 
+    FDPR = first_down_pass_rate, 
+    YPS = yards_over_sticks
+  ) %>%
+  select(-c(plays, posteam)) %>%
+  pivot_longer(!.cluster, names_to = 'feature', values_to = 'z_val')
 ```
 
 ```{r}
-km_centers$feature <- factor(km_centers$feature, levels=c('PROE', 'ORR', 'IRR', 'YPA', 
-                                                          'YAC','QBSR', 'SaR', 'QBHR', 
-                                                          'FDPR', 'YPS'))
+clust_cen_wide <- clust_cen_wide %>%
+  mutate(
+    feature = as_factor(feature)
+  )
 
-km_centers$cluster <- factor(km_centers$cluster, levels=c('Cluster 1', 'Cluster 2', 'Cluster 3', 'Cluster 4',
-                                                          'Cluster 5', 'Cluster 6'))
-
-team_clusters <- tibble(cluster=kmeans6$cluster, name=team_stats$posteam)
-
-team_clusters <- team_clusters %>%
-  left_join(teams_colors_logos, by = c("name" = "team_abbr"))
+team_cluster <- clust_cen %>%
+  select(posteam, .cluster) %>%
+  left_join(teams_colors_logos, by = c("posteam" = "team_abbr"))
 ```
 
 ```{r}
-km_centers %>% 
-  ggplot(aes(x=feature, y=z_val, color=cluster)) + 
-  geom_point(size = 3) + 
-  scale_color_brewer(palette="Set1") + 
-  gghighlight(use_direct_label = FALSE) + 
-  facet_wrap(~ cluster, ncol=3) + 
-  labs(x = "Feature", y = "Cluster Center", 
-       title = "Each Cluster's Features") + 
-  theme_minimal() + 
-  theme(legend.position = "none", strip.text = element_text(face='bold'),
-        axis.text.x = element_text(angle=90, size=8),
-        panel.grid.minor = element_blank())
-```
-
-```{r}
-pca <- prcomp(no_team_name) # perform Principle Component Analysis 
-pca_summary <- summary(pca) # summary of PCA model
-
-pc2 <- as.data.frame(pca$x[,1:2]) # extract first two PCs
-pc2$cluster <- as.factor(kmeans6$cluster) 
-cluster1_var <- round(pca_summary$importance[2,1], 4) * 100 # get variance explained by cluster 1
-cluster2_var <- round(pca_summary$importance[2,2], 4) * 100 # get variance explained by cluster 2
-
-pc2 <- pc2 %>%
-  arrange(cluster)
-
-team_clusters <- team_clusters %>%
-  arrange(cluster)
-
-pc3 <- cbind(pc2, team_clusters)
-
-pc3$cluster <- as.factor(pc3$cluster)
-
-pc3 <- pc3 %>%
-  select(-4)
-#it doubled the cluster column
-```
-
-
-Viz
-
-```{r}
-pc3 %>% 
-  ggplot(aes(x = PC1, y = PC2, shape = cluster)) + 
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16 / 9) +
-  theme_minimal() +
-  geom_text(aes(x = PC1, y = PC2, label = as.integer(cluster)), nudge_x = 0.18, nudge_y = -0.18) +
-  scale_shape_identity() +
-  labs(x = paste0('PC1 (Accounts for ', cluster1_var, '% of Variance)'), # define cluster 1 % of variance
-       y = paste0('PC2 (Accounts for ', cluster2_var, '% of Variance)'), # define cluster 2 % of variance
-       title = 'Cluster Analysis of NFL Offensive Schemes in 2020',
-       subtitle = "Text next to the team's logo is the cluster they're in",
-       caption = "Data from nflfastR") 
+clust_cen_wide %>%
+  ggplot(aes(
+    x = feature, 
+    y = z_val, 
+    colour = .cluster)) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set1") +
+  gghighlight(use_direct_label = FALSE) +
+  facet_wrap(~.cluster, ncol = 3) +
+  labs(
+    x = "Feature", 
+    y = "Cluster Center",
+    title = "Each Cluster's Features"
+  ) +
+  white_theme() +
+  theme(
+    legend.position = "none", strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 90, size = 8),
+    panel.grid.minor = element_blank()
+  )
 ```
 
 
@@ -214,63 +192,34 @@ off_epa <- pbp_rp %>%
   group_by(posteam) %>%
   summarise(epa_epa_play = mean(epa, na.rm = TRUE))
 
-pc4 <- pc3 %>%
-  left_join(off_epa, by = c("name" = "posteam"))
+clust_cen_plot <- clust_cen %>%
+  left_join(off_epa) %>%
+  left_join(nflfastR::teams_colors_logos, by = c("posteam" = "team_abbr"))
 
-pc5 <- pc4 %>%
-  group_by(cluster) %>%
-  summarise(avg_epa = mean(epa_epa_play)) %>%
-  ungroup()
-
-pc4 <- pc4 %>%
-  left_join(pc5, by = c("cluster"))
-```
-
-
-```{r}
-pc4 %>% 
-  ggplot(aes(x = cluster, y=avg_epa)) + 
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16 / 9, position = "jitter") +
-  theme_minimal() +
-  labs(x = "Cluster", 
-       y = "Cluster's Average Offensive EPA/Play",
-       title = 'The Average Offensive EPA/Play of Each Cluster',
-       subtitle = "Cluster analysis of offensive schemes for all 32 NFL, correlation does not equal causation warning",
-       caption = "Data from nflfastR") + 
-  theme(axis.text.x = element_text(size=14)) + 
-  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+clust_plot <- clust_cen_plot %>%
+  ggplot(aes(
+    x = .cluster,
+    y = epa_epa_play
+  )) +
+  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16 / 9, position = position_jitter(width = 0, height = 0.6, seed = 123)) +
+  #geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16 / 9, position = "jitter") +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  labs(
+    x = "Cluster", 
+    y = "Cluster's Average Offensive EPA/Play",
+    title = 'The Average Offensive EPA/Play of Each Cluster',
+    subtitle = "Cluster analysis of offensive schemes for all 32 NFL",
+    caption = "Data: nflfastR") + 
+  white_theme()
 ```
 
 ```{r}
-pc4 %>% 
-  ggplot(aes(x = as.integer(cluster), y = avg_epa)) + 
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16 / 9, position = position_jitter(
-    width = 0, height = 0.6, seed = 123)) +
-  theme_minimal() +
-  labs(x = "Cluster", 
-       y = "Cluster's Average Offensive EPA/Play",
-       title = 'The Average Offensive EPA/Play of Each Cluster',
-       subtitle = "Cluster analysis of offensive schemes for all 32 NFL, correlation does not equal causation warning",
-       caption = "Data from nflfastR") + 
-  theme(axis.text.x = element_text(size=14)) + 
-  scale_x_continuous(breaks=seq(1, 6, 1)) +
-  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+clust_plot
 ```
 
-```{r}
-pc4 %>% 
-  ggplot(aes(x = as.numeric(cluster), y = avg_epa)) + 
-  geom_image(aes(image = team_logo_espn), size = 0.05, asp = 16 / 9, position = position_jitter(
-    width = 0, height = 0.6, seed = 123)) +
-  theme_minimal() +
-  labs(x = "Cluster", 
-       y = "Cluster's Average Offensive EPA/Play",
-       title = 'The Average Offensive EPA/Play of Each Cluster',
-       subtitle = "Cluster analysis of offensive schemes for all 32 NFL, correlation does not equal causation warning",
-       caption = "Data from nflfastR") + 
-  theme(axis.text.x = element_text(size=14)) + 
-  scale_x_continuous(breaks=seq(1, 6, 1)) +
-  scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
-```
+
+
+
+
 
 
