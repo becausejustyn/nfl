@@ -1,9 +1,23 @@
----
-title: "R Notebook"
-output: html_notebook
----
 
-```{r}
+library(tidyverse)
+library(becausejustynfun)
+library(ggrepel)
+library(nflfastR)
+
+
+pbp <- purrr::map_df(c(2021), function(x) {
+  readRDS(
+    glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+  )
+})
+
+rosters <- purrr::map_df(c(2016:2021), function(x) {
+  readRDS(
+    glue::glue("~/Documents/nfl/data/roster/roster_{x}.rds")
+  )
+})
+
+
 epa_play <- pbp %>% 
   filter(pass == 1, !is.na(posteam)) %>% 
   group_by(posteam) %>% 
@@ -12,16 +26,14 @@ epa_play <- pbp %>%
     epa_per_db = sum(epa, na.rm = TRUE) / n,
     success_rate = sum(epa, na.rm = TRUE) / n
   )
-```
 
 ## EPA Dropback
 
-```{r}
-epa_play %>%
+p1 <- epa_play %>%
   ggplot(aes(x = epa_per_db, y = reorder(posteam, epa_per_db))) +
   geom_col(aes(fill = if_else(epa_per_db >= 0, "#2c7bb6", "#d7181c"))) +
   scale_fill_identity() +
-  theme_538() +
+  white_theme() +
   theme(panel.grid.major.y = element_blank()) +
   geom_hline(yintercept = 0) +
   scale_x_continuous(breaks = seq(-0.2, 0.3, 0.1)) +
@@ -30,49 +42,23 @@ epa_play %>%
     y = "EPA per Dropback",
     title = "The majority of teams had positive EPA/dropback",
     subtitle = "But there are some clear outliers",
-    caption = "Data: @nflfastR | Plot: @becausejustyn"
-  )
-```
+    caption = "Data: @nflfastR | Plot: @becausejustyn")
 
-## Dumbbell Plot - EPA/Dropback
-
-```{r}
-epa_play %>%
-  ggplot(aes(x = epa_per_db, y = reorder(posteam, epa_per_db))) +
-  geom_col(aes(fill = if_else(epa_per_db >= 0, "#2c7bb6", "#d7181c")),
-    width = 0.2
-  ) +
-  geom_point(aes(color = if_else(epa_per_db >= 0, "#2c7bb6", "#d7181c")),
-    size = 5
-  ) +
-  scale_fill_identity(aesthetics = c("fill", "colour")) +
-  theme_538() +
-  theme(panel.grid.major.y = element_blank()) +
-  geom_hline(yintercept = 0) +
-  scale_x_continuous(breaks = seq(-0.2, 0.3, 0.1)) +
-  labs(
-    x = "",
-    y = "EPA per Dropback",
-    title = "The majority of teams had positive EPA/dropback",
-    subtitle = "But there are some clear outliers",
-    caption = "Data: @nflfastR | Plot: @becausejustyn"
-  )
-```
+ggsave(p1, path = "plots", filename = "epa_dropback.png", dpi = 600)
 
 
-```{r}
-epa_play %>%
+p2 <- epa_play %>%
   ggplot(aes(x = epa_per_db, y = reorder(posteam, epa_per_db))) +
   geom_col(aes(fill = if_else(epa_per_db >= 0, "#2c7bb6", "#d7181c"))) +
   geom_text(aes(
     label = posteam,
     color = if_else(epa_per_db >= 0, "#2c7bb6", "#d7181c"),
     hjust = if_else(epa_per_db > 0, -0.1, 1.1)
-    ),
-    fontface = "bold"
+  ),
+  fontface = "bold"
   ) +
   scale_fill_identity(aesthetics = c("fill", "colour")) +
-  theme_538() +
+  white_theme() +
   theme(
     panel.grid.major.y = element_blank(),
     axis.text.y = element_blank()
@@ -86,11 +72,12 @@ epa_play %>%
     subtitle = "But there are some clear outliers",
     caption = "Data: @nflfastR | Plot: @becausejustyn"
   )
-```
+
+ggsave(p2, path = "plots", filename = "epa_dropback_v2.png", dpi = 600)
+
 
 ## EPA/Dropback by Play Type 
 
-```{r}
 epa_pbp <- pbp %>%
   filter(pass == 1 | rush == 1, !is.na(posteam)) %>% 
   group_by(posteam, pass, rush) %>% 
@@ -98,15 +85,13 @@ epa_pbp <- pbp %>%
     n = n(),
     epa_per_db = sum(epa, na.rm = TRUE) / n,
     success_rate = sum(epa, na.rm = TRUE) / n
-    ) %>%
+  ) %>%
   mutate(
     play_type = if_else(pass == 1, "pass", "rush")
   ) %>%
   ungroup() %>%
   select(-c(pass, rush))
-```
 
-```{r}
 epa_pbp %>% 
   ggplot(aes(
     x = fct_rev(fct_reorder2(posteam, desc(play_type), epa_per_db)), 
@@ -115,17 +100,16 @@ epa_pbp %>%
   geom_point(size = 5) +
   scale_color_manual(values = c("#003399", "#ff2b4f")) +
   coord_flip() +
-  theme_538() +
+  white_theme() +
   labs(
     x = "", y = "",
     title = "EPA Per Play",
     colour = "Play Type"
   )
-```
+
 
 ## Yards/Dropback by Play Type
 
-```{r}
 rush_v_pass <- pbp %>% 
   filter(play_type %in% c("run", "pass"), penalty == 0) %>% 
   group_by(play_type, posteam) %>% 
@@ -143,10 +127,10 @@ rush_v_pass <- bind_rows(rush_v_pass, nfl_rvp) %>%
   mutate(play_type = factor(play_type,
                             levels = c("pass", "run"),
                             labels = c("Pass", "Rush")))
-```
 
-```{r}
-rush_v_pass %>% 
+
+
+p3 <- rush_v_pass %>% 
   ggplot(aes(
     x = fct_rev(fct_reorder2(posteam, desc(play_type), avg_yds)), 
     y = avg_yds, color = play_type)) +
@@ -165,7 +149,7 @@ rush_v_pass %>%
   ) +
   coord_flip() +
   scale_color_manual(values = c("#003399", "#ff2b4f")) +
-  theme_538() +
+  white_theme() +
   theme(
     panel.grid.major.y = element_blank(),
     legend.position = "none",
@@ -181,23 +165,23 @@ rush_v_pass %>%
     limits = c(3, 9),
     breaks = seq(3, 8, 1)
   )
-```
+
+
+ggsave(p3, path = "plots", filename = "yards_dropback.png", dpi = 600)
+
 
 ## Team Yard Differential by Play Type
 
-```{r}
 rush_v_pass_wide <- rush_v_pass %>%
- pivot_wider(names_from = play_type, values_from = avg_yds) %>%
+  pivot_wider(names_from = play_type, values_from = avg_yds) %>%
   mutate(Diff = Pass - Rush) %>%
   left_join(select(teams_colors_logos, team_abbr, team_color, team_color2), by = c("posteam" = "team_abbr")) %>%
   #since NFL doesn't have a colour, make it grey
   replace_na(list(
     team_color = "grey", 
     team_color2 = "grey"))
-```
 
-```{r}
-rush_v_pass_wide %>%
+p4 <- rush_v_pass_wide %>%
   ggplot(aes(
     x = Diff, 
     y = reorder(posteam, Diff),
@@ -205,14 +189,12 @@ rush_v_pass_wide %>%
   geom_col() +
   scale_x_continuous(breaks = seq(0, 3.5, 0.5)) +
   scale_fill_identity(aesthetics = c("fill", "colour")) +
-  theme_538() +
+  white_theme() +
   labs(
     y = '', x = '',
     title = 'Yard Differential Between Pass and Rush Plays',
     subtitle = 'Regular Season, 2021',
     caption = 'A greater differential means a team averaged more pass yards per play than rush'
   )
-```
 
-
-
+ggsave(p4, path = "plots", filename = "yards_diff_play_type.png", dpi = 600)
