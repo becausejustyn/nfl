@@ -1,23 +1,10 @@
----
-title: "R Notebook"
-output: html_notebook
----
 
-```{r}
+
 library(tidyverse)
-```
 
-
-```{r}
 pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds") %>%
   filter(season_type == 'REG')
-```
 
-# Snap Counts
-
-## Team 
-
-```{r}
 df <- pbp %>%
   #filter(is.na(play_type)) %>%
   filter(
@@ -40,30 +27,30 @@ df <- pbp %>%
     team_fact = as_factor(posteam),
     team_fact = fct_reorder(team_fact, -snaps)
   )
-```
 
-```{r}
-df %>%
+p1 <- df %>%
   ggplot() +
   geom_col(
     aes(x = snaps, y = fct_reorder(posteam, snaps),
         fill = team_color, colour = team_color2), width = 0.9, size = 0.5
   ) +
-  coord_cartesian(xlim = c(850, 1125)) +
+  coord_cartesian(xlim = c(1000, 1250)) +
   scale_color_identity(aesthetics = c('fill', 'colour')) +
   hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
   labs(
     y = 'Offensive Snaps',
     x = 'Team',
     title = 'Offensive Snaps by Team',
-    subtitle = '2021, Regular Season'
+    subtitle = '2021, Regular Season',
+    caption = "data: nflfastR"
   )
-```
+
+ggsave(p1, path = "plots", filename = "off_snaps_team1.png", dpi = 600)
 
 ## Different Version
+## Has the number of snaps for each team in the bar
 
-```{r}
-df %>%
+p2 <- df %>%
   ggplot() +
   geom_col(
     aes(x = snaps, y = fct_reorder(posteam, snaps),
@@ -72,22 +59,24 @@ df %>%
   geom_text(
     aes(x = snaps, y = fct_reorder(posteam, snaps), label = snaps, colour = team_color2), 
     hjust = 1, stat = 'unique') +
-  coord_cartesian(xlim = c(950, 1200)) +
-  scale_x_continuous(breaks = seq(950, 1200, 25)) +
+  coord_cartesian(xlim = c(950, 1250)) +
+  scale_x_continuous(breaks = seq(950, 1250, 25)) +
   scale_color_identity(aesthetics = c('fill', 'colour')) +
-  #hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
   hrbrthemes::theme_ft_rc() +
   labs(
     y = 'Offensive Snaps',
     x = 'Team',
     title = 'Offensive Snaps by Team',
-    subtitle = '2021, Regular Season'
+    subtitle = '2021, Regular Season',
+    caption = "data: nflfastR"
   )
-```
+
+ggsave(p2, path = "plots", filename = "off_snaps_team2.png", dpi = 600)
+
 
 ## Differences Between Highest and Lowest Snap Count by Team
+## Range
 
-```{r}
 #getting weekly snap count
 play_count_weekly <- pbp %>%
   filter(!is.na(posteam)) %>%
@@ -126,10 +115,8 @@ play_count_weekly %>%
   ungroup() %>%
   arrange(play_range) %>% 
   slice(c(1, n()))
-```
 
-```{r}
-play_count_weekly %>%
+p3 <- play_count_weekly %>%
   group_by(posteam) %>%
   arrange(play_count) %>% 
   slice(c(1, n())) %>%
@@ -141,8 +128,8 @@ play_count_weekly %>%
     weight = play_range, 
     colour = team_color2, fill = team_color)) +
   geom_bar() +
-  coord_flip(ylim = c(15, 55)) + 
-  scale_y_continuous(breaks = seq(15, 55, 10)) +
+  coord_flip(ylim = c(15, 50)) + 
+  scale_y_continuous(breaks = seq(15, 50, 5)) +
   geom_text(
     aes(y = play_range, x = fct_reorder(posteam, play_range), label = play_range, colour = team_color2), 
     hjust = 1.25, stat = 'unique') +
@@ -150,110 +137,9 @@ play_count_weekly %>%
   tomtom::theme_538() +
   labs(
     x = '', y = '',
-    title = 'Offensive Plays 2021'
+    title = 'Range In Offensive Plays',
+    subtitle = "Regular Season, 2021",
+    caption = "data: nflfastR"
   )
-```
 
-
-## Player by Season
-
-```{r}
-snap_count_2021 <- read_csv("~/Documents/nfl/data/snap_count/snap_count_2021.csv")
-
-snap_df <- snap_count_2021 %>%
-  left_join(
-    nflfastR::teams_colors_logos %>% 
-      select(team_abbr, team_color, team_color2), 
-    by = c("team" = "team_abbr")) %>%
-  filter(
-    position %in% c('WR', 'TE') &
-      offense_snaps > 2 &
-      game_type == 'REG'
-      ) %>%
-  group_by(pfr_player_id, player, team, team_color, team_color2, position) %>%
-  summarise(
-    snaps = sum(offense_snaps)
-  ) %>% 
-  ungroup() %>%
-  mutate(team_factor = as_factor(team))
-```
-
-```{r}
-snap_df %>%
-  slice_max(snaps, n = 25) %>%
-  mutate(
-    rank = as.integer(rank(-snaps))) %>%
-  ggplot() +
-  geom_col(
-    aes(x = snaps, y = fct_reorder(player, snaps),
-        fill = team_color, colour = team_color2), width = 0.9, size = 0.5
-  ) +
-  coord_cartesian(xlim = c(850, 1025)) +
-  scale_color_identity(aesthetics = c('fill', 'colour')) +
-  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
-  labs(
-    x = 'Offensive Snaps',
-    y = 'Player',
-    title = 'Offensive Snaps by Player',
-    subtitle = '2021, Regular Season'
-  )
-```
-
-## Player by Game
-
-This I can filter by at least 15 snaps or something
-
-```{r}
-snap_game <- snap_count_2021 %>%
-  left_join(
-    nflfastR::teams_colors_logos %>% 
-      select(team_abbr, team_color, team_color2, team_color3, team_color4), 
-    by = c("team" = "team_abbr")) %>%
-  filter(
-    position %in% c('WR', 'TE') &
-      offense_snaps > 2 &
-      game_type == 'REG'
-      ) %>%
-  group_by(pfr_player_id, player, team, opponent, week, game_id, pfr_game_id, team_color, team_color2, team_color3, team_color4) %>%
-  summarise(
-    snaps = sum(offense_snaps)
-  ) %>% 
-  ungroup() %>%
-  mutate(team_factor = as_factor(team))
-```
-
-```{r}
-p1 <- snap_game %>%
-  mutate(
-    across("team_color2", str_replace, "#c60c30", "#b0b7bc"),
-    game_label = paste0("Week ", week, ", ", team, " vs. ", opponent)
-    ) %>%
-  arrange(-snaps) %>%
-  mutate(rank = row_number()) %>%
-  filter(rank <= 15) %>%
-  ggplot() +
-  geom_col(
-    aes(x = snaps, y = fct_reorder(player, snaps), fill = team_color, colour = team_color3), 
-    width = 0.9, size = 0.5) + 
-  scale_color_identity(aesthetics = c("fill", "color")) 
-
-p1 +
-  geom_text(
-    aes(x = snaps, y = fct_reorder(player, snaps), label = game_label, colour = team_color2), 
-    hjust = 1, nudge_x = -.5, size = 4) +
-  geom_text(
-    aes(x = 50, y = player, label = snaps, colour = team_color2), 
-    hjust = 1) +
-  coord_cartesian(xlim = c(50, 90)) + 
-  hrbrthemes::theme_ft_rc(base_size = 9.5, axis_title_size = 11) +
-  labs(
-    x = 'Offensive Snaps',
-    y = 'Player',
-    title = 'Offensive Snaps by Player in a Single Game',
-    subtitle = '2021, Regular Season',
-    caption = 'Top 15 Games'
-  )
-```
-
-
-
+ggsave(p3, path = "plots", filename = "off_snaps_team_range.png", dpi = 600)
