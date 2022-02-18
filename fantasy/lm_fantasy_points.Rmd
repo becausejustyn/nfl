@@ -1,0 +1,316 @@
+---
+title: "R Notebook"
+output: 
+  html_document: 
+    self_contained: no
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+
+replace0 <- function(x) {
+  if_else(condition = is.na(x), 
+          true = 0, 
+          false = as.numeric(x))
+}
+```
+
+```{r}
+pbp <- read_rds("~/Documents/nfl/data/pbp/play_by_play_2021.rds")
+
+player_stats_df <- nflfastR::calculate_player_stats(pbp, weekly = TRUE) 
+
+player_stats_df1 <- player_stats_df %>%
+  filter(season_type == 'REG', attempts > 2) %>%
+  select(player_name, completions:rushing_2pt_conversions, fantasy_points) %>%
+  # the only missing values are because the value is 0
+  # dropping them would not make much sense
+  mutate(across(where(is.numeric), replace0))
+```
+
+```{r}
+pbp %>%
+  dplyr::filter(
+    pass_attempt == 1, 
+    !is.na(receiver_player_id), 
+    down <= 4
+    ) %>%
+  dplyr::select(
+    receiver_player_id, receiver_player_name, game_id, pass_attempt, complete_pass, 
+    air_yards, yards_gained, pass_touchdown) %>%
+  group_by(receiver_player_id, receiver_player_name, game_id) %>%
+  summarise(
+    targets = n(),
+    catches = sum(complete_pass, na.rm = TRUE),
+    yards_per_target = mean(yards_gained, na.rm = TRUE),
+    yards_gained = sum(yards_gained, na.rm = TRUE),
+    rec_td = sum(pass_touchdown, na.rm = TRUE)
+  ) %>%
+  mutate(rec_fpts = yards_gained * 0.1 + rec_td * 6) %>%
+  ungroup()
+
+
+```
+
+```{r}
+get_weekly_results <- function(df) {
+
+df %>%
+  dplyr::select(receiver_player_id, receiver_player_name, game_id, pass_attempt, complete_pass, air_yards, yards_gained, pass_touchdown) %>%
+  dplyr::filter(pass_attempt == 1, !is.na(receiver_player_id), two_point_attempt == 0) %>%
+group_by(receiver_player_id, receiver_player_name, game_id) %>% #might need to sum
+mutate(rec_fpts = yards_gained * 0.1 + rec_td * 6)
+
+
+
+df = df.groupby(['receiver_player_id', 'receiver_player_name', 'game_id'], as_index=False).sum()
+
+df = df.rename(columns={
+        'pass_attempt': 'targets', 'complete_pass': 'catches', 'pass_touchdown': 'rec_td'
+    })
+
+df['rec_fpts'] = df.apply(lambda x: x.catches + x.yards_gained*0.1 + x.rec_td*6, axis=1)
+
+return(df)
+}
+```
+
+```{r}
+player_stats %>%
+  ggplot(aes(x = targets, y = fantasy_points)) +
+  geom_point() +
+  becausejustynfun::white_theme()
+
+player_stats %>%
+  ggplot(aes(x = receiving_air_yards, y = fantasy_points)) +
+  geom_point() +
+  becausejustynfun::white_theme()
+```
+
+```{r}
+set.seed(1234)
+player_stats_split <- player_stats_df1 %>%
+  initial_split()
+
+player_stats_train <- training(player_stats_split)
+player_stats_test <- testing(player_stats_split)
+```
+
+```{r}
+lm_spec <- linear_reg() %>%
+  set_mode("regression") %>%
+  set_engine("lm")
+
+lm_fit <- lm_spec %>%
+  fit(fantasy_points ~ ., data = player_stats_train)
+```
+
+```{r}
+rf_spec <- rand_forest(mode = "regression") %>%
+  set_engine("ranger")
+
+rf_fit <- rf_spec %>%
+  fit(fantasy_points ~ ., data = player_stats_train)
+```
+
+Evaluate models 
+
+```{r}
+results_train <- lm_fit %>%
+  predict(new_data = player_stats_train) %>%
+  mutate(
+    truth = player_stats_train$fantasy_points,
+    model = "lm"
+  ) %>%
+  bind_rows(rf_fit %>%
+    predict(new_data = player_stats_train) %>%
+    mutate(
+      truth = player_stats_train$fantasy_points,
+      model = "rf"
+    ))
+
+results_test <- lm_fit %>%
+  predict(new_data = player_stats_test) %>%
+  mutate(
+    truth = player_stats_test$fantasy_points,
+    model = "lm"
+  ) %>%
+  bind_rows(rf_fit %>%
+    predict(new_data = player_stats_test) %>%
+    mutate(
+      truth = player_stats_test$fantasy_points,
+      model = "rf"
+    ))
+```
+
+
+```{r}
+results_train %>%
+  group_by(model) %>%
+  rmse(truth = truth, estimate = .pred)
+```
+
+```{r}
+results_test %>%
+  group_by(model) %>%
+  rmse(truth = truth, estimate = .pred)
+```
+
+```{r}
+results_test %>%
+  mutate(train = "testing") %>%
+  bind_rows(results_train %>%
+    mutate(train = "training")) %>%
+  ggplot(aes(truth, .pred, color = model)) +
+  geom_abline(lty = 2, color = "gray80", size = 1.5) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~train) +
+  labs(
+    x = "Truth",
+    y = "Predicted fantasy points",
+    color = "Type of model"
+  )
+```
+
+
+vfold
+```{r}
+set.seed(1234)
+player_folds <- vfold_cv(player_stats_train)
+
+rf_res <- fit_resamples(
+  rf_spec,
+  fantasy_points ~ .,
+  player_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+
+rf_res %>%
+  collect_metrics()
+```
+
+```{r}
+rf_res %>%
+  unnest(.predictions) %>%
+  ggplot(aes(fantasy_points, .pred, color = id)) +
+  geom_abline(lty = 2, color = "gray80", size = 1.5) +
+  geom_point(alpha = 0.5) +
+  labs(
+    x = "Truth",
+    y = "Predicted fantasy_points",
+    color = NULL
+  )
+```
+
+
+The rmse might look good here, but if you look at the actual distribution of the points scored, you will get some context
+
+
+
+# Regularised Regression
+
+```{r}
+set.seed(2017)
+player_stats_split <- player_stats_df1 %>%
+  initial_split()
+player_stats_train <- training(player_stats_split)
+player_stats_test <- testing(player_stats_split)
+
+
+player_rec <- recipe(fantasy_points ~ ., data = player_stats_train) %>%
+  update_role(player_name, new_role = "ID") %>%
+  step_zv(all_numeric(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+
+player_prep <- player_rec %>%
+  prep(strings_as_factors = FALSE)
+
+lasso_spec <- linear_reg(penalty = 0.1, mixture = 1) %>%
+  set_engine("glmnet")
+
+wf <- workflow() %>%
+  add_recipe(player_rec)
+
+lasso_fit <- wf %>%
+  add_model(lasso_spec) %>%
+  fit(data = player_stats_train)
+
+lasso_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+
+set.seed(2017)
+player_boot <- bootstraps(player_stats_train)
+
+tune_spec <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+
+
+doParallel::registerDoParallel()
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+  wf %>% add_model(tune_spec),
+  resamples = player_boot,
+  grid = lambda_grid
+)
+
+lasso_grid %>%
+  collect_metrics()
+```
+
+```{r}
+lasso_grid %>%
+  collect_metrics() %>%
+  ggplot(aes(penalty, mean, color = .metric)) +
+  geom_errorbar(aes(
+    ymin = mean - std_err,
+    ymax = mean + std_err
+  ),
+  alpha = 0.5
+  ) +
+  geom_line(size = 1.5) +
+  facet_wrap(~.metric, scales = "free", nrow = 2) +
+  scale_x_log10() +
+  theme(legend.position = "none")
+```
+
+```{r}
+lowest_rmse <- lasso_grid %>%
+  select_best("rmse")
+
+final_lasso <- finalize_workflow(
+  wf %>% add_model(tune_spec),
+  lowest_rmse
+)
+```
+
+```{r}
+library(vip)
+
+final_lasso %>%
+  fit(player_stats_train) %>%
+  pull_workflow_fit() %>%
+  vi(lambda = lowest_rmse$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+```
+
+```{r}
+last_fit(
+  final_lasso,
+  player_stats_split
+) %>%
+  collect_metrics()
+```
+
+I was being a silly billy, because it is easy to guess fantasy points if you use the stats that are used to predict them

@@ -1,0 +1,184 @@
+---
+title: "R Notebook"
+output: 
+  html_document: 
+    self_contained: no
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+```
+
+```{r}
+height_to_cm <- function(x) {
+  # this is to convert a character string of height to cm
+  # e.g. "6-4" will convert to 193.04 as a numerical
+  
+  #can cheat here since it is unlikely that 10 feet will be used
+  feet = substr(x, 1, 1) %>% as.numeric()
+  inches = substr(x, 3, 4) %>% as.numeric()
+  cm = (feet * 30.48) + (inches * 2.54)
+  return(cm)
+}
+
+replace0 <- function(x) {
+  if_else(condition = is.na(x), 
+          true = 0, 
+          false = as.numeric(x))
+}
+```
+
+```{r}
+pbp <- purrr::map_df(c(2016:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+}) %>%
+  filter(
+    season_type == 'REG'
+    )
+
+pbp_weekly_stats <- nflfastR::calculate_player_stats(pbp, weekly = TRUE)
+
+weekly_joined <- pbp_weekly_stats %>%
+  left_join(rosters, by = c("player_id" = "gsis_id", "season", "recent_team" = "team")) %>%
+  filter(
+    position %in% c('WR', 'TE', 'RB', 'FB')
+  ) %>%
+  mutate(
+    height = height_to_cm(height),
+    weight = weight %>% as.numeric(),
+    age = season - lubridate::year(birth_date), .after = weight, #format(Sys.time(), "%Y") %>% as.numeric()
+    season = as_factor(season),
+    week = as_factor(week),
+    rush_conv_rate = rushing_first_downs / carries,
+    rec_conv_rate = receiving_first_downs / receptions,
+    fumble_rate = (rushing_fumbles + receiving_fumbles) / (carries + receptions),
+    rush_td_rate = rushing_tds / carries,
+    rec_td_rate = receiving_tds / receptions,
+    two_pt_conv = rushing_2pt_conversions + receiving_2pt_conversions,
+    catch_rate = receptions / targets,
+    rec_yards_target = receiving_yards / targets,
+    air_yard_prop = receiving_air_yards / (receiving_air_yards + receiving_yards_after_catch),
+    yac_prop = receiving_yards_after_catch / (receiving_air_yards + receiving_yards_after_catch),
+    rush_epa_carry = rushing_epa / carries,
+    rec_epa_target = receiving_epa / targets
+  ) %>%
+  select(
+    player_id, player_name, season:week, height, age, weight,
+    rush_conv_rate, rec_conv_rate, fumble_rate,
+    rush_td_rate, rec_td_rate, two_pt_conv, catch_rate, rec_yards_target,
+    racr, #Receiver Air Conversion Ratio. RACR = receiving_yards / receiving_air_yards
+    air_yard_prop, yac_prop, rush_epa_carry, rec_epa_target, target_share,
+    fantasy_points
+  ) 
+
+weekly_joined <- weekly_joined %>%
+  mutate(across(where(is.numeric), replace0))
+```
+
+```{r}
+set.seed(2017)
+rec_weekly_split <- weekly_joined %>%
+  initial_split()
+
+rec_weekly_train <- training(rec_weekly_split)
+rec_weekly_test <- testing(rec_weekly_split)
+
+weekly_rec <- recipe(fantasy_points ~ ., data = rec_weekly_train) %>%
+  update_role(player_id:week, new_role = "ID") %>%
+  step_zv(all_numeric(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+```
+
+```{r}
+weekly_prep <- weekly_rec %>%
+  prep(strings_as_factors = FALSE)
+
+lasso_spec <- linear_reg(penalty = 0.1, mixture = 1) %>%
+  set_engine("glmnet")
+
+wf <- workflow() %>%
+  add_recipe(weekly_rec)
+
+lasso_fit <- wf %>%
+  add_model(lasso_spec) %>%
+  fit(data = rec_weekly_train)
+
+lasso_fit %>%
+  extract_fit_parsnip() %>%
+  tidy()
+```
+
+```{r}
+set.seed(2017)
+weekly_boot <- bootstraps(rec_weekly_train)
+
+tune_spec <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+
+doParallel::registerDoParallel()
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+  wf %>% add_model(tune_spec),
+  resamples = weekly_boot,
+  grid = lambda_grid
+)
+
+lasso_grid %>%
+  collect_metrics()
+```
+
+```{r}
+lasso_grid %>%
+  collect_metrics() %>%
+  ggplot(aes(penalty, mean, color = .metric)) +
+  geom_errorbar(aes(
+    ymin = mean - std_err,
+    ymax = mean + std_err
+  ),
+  alpha = 0.5
+  ) +
+  geom_line(size = 1.5) +
+  facet_wrap(~.metric, scales = "free", nrow = 2) +
+  scale_x_log10() +
+  theme(legend.position = "none")
+```
+
+```{r}
+lowest_rmse <- lasso_grid %>%
+  select_best("rmse")
+
+final_lasso <- finalize_workflow(
+  wf %>% add_model(tune_spec),
+  lowest_rmse
+)
+
+library(vip)
+
+final_lasso %>%
+  fit(rec_weekly_train) %>%
+  pull_workflow_fit() %>%
+  vi(lambda = lowest_rmse$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+```
+
+```{r}
+last_fit(
+  final_lasso,
+  rec_weekly_split
+) %>%
+  collect_metrics()
+```
+

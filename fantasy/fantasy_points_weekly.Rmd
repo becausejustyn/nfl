@@ -1,0 +1,195 @@
+---
+title: "R Notebook"
+output: 
+  html_document: 
+    self_contained: no
+---
+
+Weekly
+
+
+```{r}
+# NGS Stats
+
+ngs <- read_rds("~/Documents/nfl/data/ngs/ngs_passing.rds")
+
+ngs_week <- ngs %>%
+  filter(
+    season_type == 'REG',
+    week > 0.5, 
+    attempts > 2,
+    player_position == 'QB'
+  ) %>%
+  mutate(
+    interception_rate = interceptions/attempts,
+    pass_td_rate = pass_touchdowns/attempts,
+    season = as_factor(season),
+    week = as_factor(week),
+    fantasy_points = (pass_yards * 0.04) + (pass_touchdowns * 4) + (interceptions * -2)
+  ) %>%
+  select(
+    season, week, player_display_name, player_short_name, avg_time_to_throw:attempts, 
+    passer_rating:completions, completion_percentage_above_expectation:max_air_distance, 
+    interception_rate:player_gsis_id)
+```
+
+```{r}
+# PBP for stats that NGS do not have
+
+pbp <- purrr::map_df(c(2016:2021), function(x) {
+  readRDS(
+      glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
+    )
+}) %>%
+  filter(season_type == 'REG')
+
+# getting weekly stats from pbp
+weekly_stats <- nflfastR::calculate_player_stats(pbp, weekly = TRUE)
+
+#dropping some values you don't want, making some factors
+weekly_stats_qb <- weekly_stats %>%
+  select(
+    player_id:player_name, season:week, sacks:rushing_2pt_conversions, fantasy_points
+  ) %>%
+  mutate(
+    season = as_factor(season),
+    week = as_factor(week)
+  )
+
+# joining the data and making some new variables
+# want to get rates
+weekly_joined <- ngs_week %>%
+  left_join(weekly_stats_qb, by = c("player_gsis_id" = "player_id", "season", "week")) %>%
+  mutate(
+    fumble_rate = (sack_fumbles + rushing_fumbles) / (attempts + carries),
+    sack_rate = sacks / attempts,
+    pass_yac_prop = passing_yards_after_catch / (passing_yards_after_catch + passing_air_yards),
+    air_yards_prop = passing_air_yards / (passing_yards_after_catch + passing_air_yards),
+    passing_first_down_rate = passing_first_downs / attempts,
+    scramble_rate = carries / attempts
+  ) %>%
+  select(
+    # ID variables
+    player_display_name, player_short_name, season:week, fantasy_points,
+    # Somewhat team based
+    avg_time_to_throw, attempts,
+    # Negative play rate
+    sack_rate, interception_rate, fumble_rate,
+    # acc
+    avg_completed_air_yards, max_completed_air_distance, cpoe = completion_percentage_above_expectation,
+    # aggressiveness/coaching
+    avg_air_distance, avg_intended_air_yards, aggressiveness, avg_air_yards_to_sticks, 
+    # How do they get their yards
+    pass_yac_prop, air_yards_prop,  
+    # adv stats
+    #PACR = passing_yards / passing_air_yards
+    passing_epa, pacr, dakota)
+```
+
+```{r}
+set.seed(2017)
+ngs_week_split <- weekly_joined %>%
+  initial_split()
+
+ngs_week_train <- training(ngs_week_split)
+ngs_week_test <- testing(ngs_week_split)
+
+player_rec <- recipe(fantasy_points ~ ., data = ngs_week_train) %>%
+  update_role(player_display_name:week, new_role = "ID") %>%
+  step_zv(all_numeric(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+```
+
+```{r}
+player_prep <- player_rec %>%
+  prep(strings_as_factors = FALSE)
+
+lasso_spec <- linear_reg(penalty = 0.1, mixture = 1) %>%
+  set_engine("glmnet")
+
+wf <- workflow() %>%
+  add_recipe(player_rec)
+
+lasso_fit <- wf %>%
+  add_model(lasso_spec) %>%
+  fit(data = ngs_week_train)
+
+lasso_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+
+
+```{r}
+set.seed(2017)
+player_boot <- bootstraps(ngs_week_train)
+
+tune_spec <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+
+doParallel::registerDoParallel()
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+  wf %>% add_model(tune_spec),
+  resamples = player_boot,
+  grid = lambda_grid
+)
+
+lasso_grid %>%
+  collect_metrics()
+```
+
+```{r}
+lasso_grid %>%
+  collect_metrics() %>%
+  ggplot(aes(penalty, mean, color = .metric)) +
+  geom_errorbar(aes(
+    ymin = mean - std_err,
+    ymax = mean + std_err
+  ),
+  alpha = 0.5
+  ) +
+  geom_line(size = 1.5) +
+  facet_wrap(~.metric, scales = "free", nrow = 2) +
+  scale_x_log10() +
+  theme(legend.position = "none")
+```
+
+```{r}
+lowest_rmse <- lasso_grid %>%
+  select_best("rmse")
+
+final_lasso <- finalize_workflow(
+  wf %>% add_model(tune_spec),
+  lowest_rmse
+)
+```
+
+```{r}
+library(vip)
+
+final_lasso %>%
+  fit(ngs_week_train) %>%
+  pull_workflow_fit() %>%
+  vi(lambda = lowest_rmse$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+```
+
+```{r}
+last_fit(
+  final_lasso,
+  ngs_week_split
+) %>%
+  collect_metrics()
+```
+
