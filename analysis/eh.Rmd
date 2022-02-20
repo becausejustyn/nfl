@@ -1,0 +1,353 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+
+pbp <- read_rds("~/pbp_2021.rds")
+```
+
+Adjusting EPA for Strength of Opponent
+
+```{r}
+# each team’s weekly epa/play
+
+epa_data <- pbp %>%
+  dplyr::filter(
+    !is.na(epa), 
+    !is.na(ep), 
+    !is.na(posteam), 
+    play_type %in% c("pass", "run")
+    ) %>%
+  dplyr::group_by(game_id, season, week, posteam, home_team) %>%
+  dplyr::summarise(off_epa = mean(epa)) %>%
+  dplyr::left_join(
+    filter(
+      pbp, 
+      !is.na(epa), 
+      !is.na(ep), 
+      !is.na(posteam), 
+      play_type %in% c("pass", "run")
+      ) %>%
+      dplyr::group_by(game_id, season, week, defteam, away_team) %>%
+      dplyr::summarise(def_epa = mean(epa)),
+    by = c("game_id", "posteam" = "defteam", "season", "week"),
+    all.x = TRUE) %>%
+  dplyr::mutate(
+    opponent = ifelse(posteam == home_team, away_team, home_team)) %>%
+  dplyr::select(
+    game_id, season, week, home_team, 
+    away_team, posteam, opponent, off_epa, def_epa)
+
+
+# Construct opponent dataset and lag the moving average of their last ten games.
+
+opponent_data <- epa_data %>%
+  dplyr::select(-opponent) %>%
+  dplyr::rename(
+    opp_off_epa = off_epa,
+    opp_def_epa = def_epa
+  ) %>%
+  dplyr::group_by(posteam) %>%
+  dplyr::arrange(season, week) %>%
+  dplyr::mutate(
+    opp_def_epa = pracma::movavg(opp_def_epa, n = 10, type = "s"),
+    opp_def_epa = dplyr::lag(opp_def_epa),
+    opp_off_epa = pracma::movavg(opp_off_epa, n = 10, type = "s"),
+    opp_off_epa = dplyr::lag(opp_off_epa)
+  )
+
+# Merge opponent data back in with the weekly epa data
+
+epa_data <- epa_data %>%
+  left_join(
+    opponent_data,
+    by = c("game_id", "season", "week", "home_team", 
+           "away_team", "opponent" = "posteam"),
+    all.x = TRUE
+  )
+
+#Don’t fret that the opponent’s epa columns will have NAs in the first week. Y
+#ou simply can’t lag from the first observation.
+
+#The final piece of the equation needed to make the adjustments is the 
+#league mean for epa/play on offense and defense. We need to know how strong 
+#the opponent is relative to the average team in the league.
+
+epa_data <- epa_data %>%
+  dplyr::left_join(
+    dplyr::filter(epa_data, posteam == home_team) %>%
+      dplyr::group_by(season, week) %>%
+      dplyr::summarise(
+        league_mean = mean(off_epa + def_epa)) %>%
+      dplyr::ungroup() %>%
+      dplyr::group_by(season) %>%
+      dplyr::mutate(
+        # We lag because we need to know the league mean up to that point in the season
+        league_mean = lag(pracma::movavg(league_mean, n = 10, type = "s"), ) ),
+    by = c("season", "week"), 
+    all.x = TRUE)
+
+#Finally, we can get to adjusting a team’s epa/play. We’ll create an adjustment 
+#measure by subtracting the opponent’s epa/play metrics from the league mean. 
+#Then we add the adjustment measure to each team’s weekly performance.
+
+# Adjust EPA
+epa_data <- epa_data %>%
+  dplyr::mutate(
+    off_adjustment_factor = ifelse(!is.na(league_mean), league_mean - opp_def_epa, 0),
+    def_adjustment_factor = ifelse(!is.na(league_mean), league_mean - opp_off_epa, 0),
+    adjusted_off_epa = off_epa + off_adjustment_factor,
+    adjusted_def_epa = def_epa + def_adjustment_factor,
+  )
+```
+
+```{r}
+# Compute outcomes and win percentage ------------------------------------------
+
+#how many snaps a team played with the nflfastR win probability (model 
+#with Vegas line) above a critical value (50%) more or less arbitrarily chosen 
+#by me and compare this value with the true win percentage.
+
+wp_limit <- 0.5
+
+outcomes <- pbp %>%
+  group_by(season, game_id, home_team) %>%
+  summarise(
+    home_win = if_else(result > 0, 1, 0),
+    home_tie = if_else(result == 0, 1, 0)
+  ) %>%
+  group_by(season, home_team) %>%
+  summarise(
+    home_games = n(),
+    home_wins = sum(home_win),
+    home_ties = sum(home_tie)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    # away games
+    pbp %>%
+      group_by(season, game_id, away_team) %>%
+      summarise(
+        away_win = if_else(result < 0, 1, 0),
+        away_tie = if_else(result == 0, 1, 0)
+      ) %>%
+      group_by(season, away_team) %>%
+      summarise(
+        away_games = n(),
+        away_wins = sum(away_win),
+        away_ties = sum(away_tie)
+      ) %>%
+      ungroup(),
+    by = c("season", "home_team" = "away_team")
+  ) %>%
+  rename(team = "home_team") %>%
+  mutate(
+    games = home_games + away_games,
+    wins = home_wins + away_wins,
+    losses = games - wins,
+    ties = home_ties + away_ties,
+    win_percentage = (wins + 0.5 * ties) / games
+  ) %>%
+  select(
+    season, team, games, wins, losses, ties, win_percentage
+  )
+
+# Compute percentage of plays with wp > wp_lim ---------------------------------
+
+wp_combined <- pbp %>%
+  filter(!is.na(vegas_wp) & !is.na(posteam)) %>%
+  group_by(season, posteam) %>%
+  summarise(
+    pos_plays = n(),
+    pos_wp_lim_plays = sum(vegas_wp > wp_limit)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    pbp %>%
+      filter(!is.na(vegas_wp) & !is.na(posteam)) %>%
+      group_by(season, defteam) %>%
+      summarise(
+        def_plays = n(),
+        def_wp_lim_plays = sum(vegas_wp < wp_limit)
+      ) %>%
+      ungroup(),
+    by = c("season", "posteam" = "defteam")
+  ) %>%
+  rename(team = "posteam") %>%
+  mutate(
+    wp_lim_percentage = as.numeric(pos_wp_lim_plays + def_wp_lim_plays) / as.numeric(pos_plays + def_plays)
+  ) %>%
+  select(season, team, wp_lim_percentage)
+
+# Combine data and add colors and logos ----------------------------------------
+
+chart <- outcomes %>%
+  left_join(wp_combined, by = c("season", "team")) %>%
+  filter(!is.na(wp_lim_percentage)) %>%
+  mutate(diff = 100 * (win_percentage - wp_lim_percentage)) %>%
+  group_by(team) %>%
+  summarise_all(mean) %>%
+  ungroup() %>%
+  inner_join(
+    nflfastR::teams_colors_logos %>% select(team_abbr, team_color, team_logo_espn, team_logo_wikipedia),
+    by = c("team" = "team_abbr")
+  ) %>%
+  mutate(
+    grob = map(seq_along(team_logo_espn), function(x) {
+      grid::rasterGrob(magick::image_read(team_logo_espn[[x]]))
+    })
+  ) %>%
+  select(team, win_percentage, wp_lim_percentage, diff, team_color, grob) %>%
+  arrange(desc(diff))
+```
+
+```{r}
+# Create bar plot  -------------------------------------------------------------
+chart %>%
+  ggplot(aes(x = seq_along(diff), y = diff)) +
+  geom_hline(aes(yintercept = mean(diff)), color = "red", linetype = "dashed") +
+  geom_col(width = 0.5, colour = chart$team_color, fill = chart$team_color, alpha = 0.5) +
+  ggpmisc::geom_grob(aes(x = seq_along(diff), y = diff, label = grob), vp.width = 0.035) +
+  # scale_x_continuous(expand = c(0,0)) +
+  labs(
+    x = "Rank",
+    y = "Win Percentage Over Expectation",
+    title = "NFL Team Efficiency",
+    subtitle = "How Lucky are the Teams?",
+    caption = "Figure: @mrcaseb | Data: @nflfastR"
+  ) +
+  ggthemes::theme_stata(scheme = "sj", base_size = 8) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.caption = element_text(hjust = 1),
+    axis.text.y = element_text(angle = 0, vjust = 0.5),
+    legend.title = element_text(size = 8, hjust = 0, vjust = 0.5, face = "bold"),
+    legend.position = "top",
+    aspect.ratio = 1 / 1.618
+  ) +
+  NULL
+```
+
+
+
+```{r}
+prem_epa_df <- pbp %>%
+  filter(
+    down <= 2, 
+    wp <= .8, 
+    wp >= .2, 
+    half_seconds_remaining >= 120) %>%
+  group_by(posteam) %>%
+  summarize(
+    pass_freq = mean(pass),
+    pass_epa = mean(ifelse(pass == 1, epa, NA), na.rm = T),
+    run_epa = mean(ifelse(rush == 1, epa, NA), na.rm = T),
+    pass_epa_prem = pass_epa - run_epa
+  )
+```
+
+Rolling Averages of EPA
+
+```{r}
+# Offense EPA
+epa_data_df <- pbp %>%
+  dplyr::filter(
+    !is.na(epa), 
+    !is.na(ep), 
+    !is.na(posteam),
+    play_type %in% c("pass", "run") | penalty == 1, 
+    qb_kneel != 1) %>%
+  dplyr::group_by(game_id, season, week, posteam, home_team) %>%
+  dplyr::summarise(
+    off_dropback_pct = mean(qb_dropback == 1),
+    off_epa = mean(epa),
+    off_pass_epa = mean(epa[qb_dropback == 1]),
+    off_rush_epa = mean(epa[qb_dropback == 0]),
+    off_epa_n = sum(qb_dropback == 1 | qb_dropback == 0),
+    off_pass_epa_n = sum(qb_dropback == 1),
+    off_rush_epa_n = sum(qb_dropback == 0),
+    .groups = "drop"
+  ) %>%
+  # Defense EPA
+  dplyr::left_join(pbp %>%
+    filter(
+      !is.na(epa), !is.na(ep), !is.na(posteam),
+      play_type == "pass" | play_type == "run" | penalty == 1, qb_kneel != 1
+    ) %>%
+    dplyr::group_by(game_id, season, week, defteam, away_team) %>%
+    dplyr::summarise(
+      def_epa = mean(epa),
+      def_dropback_pct = mean(qb_dropback == 1),
+      def_pass_epa = mean(epa[qb_dropback == 1]),
+      def_rush_epa = mean(epa[qb_dropback == 0]),
+      def_epa_n = sum(qb_dropback == 1 | qb_dropback == 0),
+      def_pass_epa_n = sum(qb_dropback == 1),
+      def_rush_epa_n = sum(qb_dropback == 0),
+      .groups = "drop"
+    ),
+  by = c("game_id", "posteam" = "defteam", "season", "week")
+  ) %>%
+  dplyr::mutate(opponent = ifelse(posteam == home_team, away_team, home_team)) %>%
+  dplyr::select(
+    game_id, season, week, home_team, away_team, posteam, opponent,
+    off_dropback_pct, off_epa, off_pass_epa, off_rush_epa,
+    off_epa_n, off_pass_epa_n, off_rush_epa_n,
+    def_epa_n, def_pass_epa_n, def_rush_epa_n,
+    def_dropback_pct, def_epa, def_pass_epa, def_rush_epa
+  ) %>%
+  # Not sure why, but there is one instance where the posteam = ""
+  dplyr::filter(posteam != "")
+```
+
+```{r}
+# Function to get moving average of a dynamic window from 10 - 20 games
+wt_mov_avg_local <- function(var, weight, window, type, moving = T) {
+  if (length(weight) == 1 & weight[1] == 1) {
+    weight <- rep(1, length(var))
+  }
+  if (moving) {
+    dplyr::case_when(
+      window == 10 ~ pracma::movavg(var * weight, n = 10, type = type) /
+        pracma::movavg(weight, n = 10, type = type),
+      window == 11 ~ pracma::movavg(var * weight, n = 11, type = type) /
+        pracma::movavg(weight, n = 11, type = type),
+      window == 12 ~ pracma::movavg(var * weight, n = 12, type = type) /
+        pracma::movavg(weight, n = 12, type = type),
+      window == 13 ~ pracma::movavg(var * weight, n = 13, type = type) /
+        pracma::movavg(weight, n = 13, type = type),
+      window == 14 ~ pracma::movavg(var * weight, n = 14, type = type) /
+        pracma::movavg(weight, n = 14, type = type),
+      window == 15 ~ pracma::movavg(var * weight, n = 15, type = type) /
+        pracma::movavg(weight, n = 15, type = type),
+      window == 16 ~ pracma::movavg(var * weight, n = 16, type = type) /
+        pracma::movavg(weight, n = 16, type = type),
+      window == 17 ~ pracma::movavg(var * weight, n = 17, type = type) /
+        pracma::movavg(weight, n = 17, type = type),
+      window == 18 ~ pracma::movavg(var * weight, n = 18, type = type) /
+        pracma::movavg(weight, n = 18, type = type),
+      window == 19 ~ pracma::movavg(var * weight, n = 19, type = type) /
+        pracma::movavg(weight, n = 19, type = type),
+      window == 20 ~ pracma::movavg(var * weight, n = 20, type = type) /
+        pracma::movavg(weight, n = 20, type = type)
+    )
+  } else {
+    pracma::movavg(var * weight, n = 10, type = type) /
+      pracma::movavg(weight, n = 10, type = type)
+  }
+}
+```
+
+
+```{r}
+pbp %>%
+  group_by(passer_player_name) %>%
+  summarise(
+    longest_pass = max(air_yards, na.rm = TRUE)
+  ) %>%
+  arrange(-longest_pass)
+```
+
+
