@@ -1,0 +1,236 @@
+---
+title: "R Notebook"
+output: 
+  html_document: 
+    self_contained: no
+---
+
+NFL Elo
+
+`https://www.stat.cmu.edu/cmsac/football/2-elo-intro.html`
+
+```{r}
+library(tidyverse)
+
+pbp <- read_rds("~/pbp_2021.rds")
+```
+
+```{r}
+pbp %>%
+  select(
+    game_id, week, season,
+    home_team, away_team,
+    home_score, away_score
+  ) %>%
+  distinct(game_id, .keep_all = TRUE) %>%
+  mutate(
+    game_outcome = case_when(
+      home_score > away_score ~ 1,
+      home_score == away_score ~ 0.5,
+      TRUE ~ 0
+  ))
+```
+
+The expected score for the home team is:
+`$E_{home} = \frac{1}{1 + 10^{(R_{away}R_{home})/400}}$`
+`E_{home} = \frac{1}{1 + 10^{\frac{R_{away} - R_{home}}{400}}}`
+
+For the away team it is
+
+`$E_{away} = \frac{1}{1 + 10^{(R_{away}R_{home})/400}}$`
+
+The 400 and 10 basically determine the scaling of the ratings and can be modified. These expected scores represent the probability of winning plus half the probability of drawing - but for our purposes, basically the probability of winning.
+
+We then update the ratings for the home team if they scored `S_{home}` points
+
+`R_{home}^{new} = R_{home} + K \cdot (S_{home} - E_{home})`
+
+where K is the update factor. For now we we’ll set this to 20, but this is the maximum number of points a team gains from winning a single game.
+
+To simplify this process, we’re going to create functions to calculate both the expected score and new rating for a team:
+
+```{r}
+calc_expected_score <- function(team_rating, opp_team_rating) {
+  return(1 / (1 + 10^((opp_team_rating - team_rating) / 400)))
+  }
+
+calc_new_rating <- function(team_rating, observed_score, expected_score, k_factor = 20) {
+  return(team_rating + k_factor * (observed_score - expected_score))
+  }
+```
+
+As an example calculation, in week one the Steelers lost to the Patriots 33-3. The Steelers initial rating was:
+
+```{r}
+nfl_elo_ratings %>%
+  filter(team == "PIT") %>%
+  pull(elo_rating)
+
+#1572.193
+
+nfl_elo_ratings %>%
+  filter(team == "NE") %>%
+  pull(elo_rating)
+
+#1640.856
+
+# Given these ratings, the Steelers expected score was:
+#calc_expected_score(init_pit_elo, init_ne_elo)
+#0.4024523
+
+#And their updated rating following the loss?
+
+#calc_new_rating(init_pit_elo, 0, calc_expected_score(init_pit_elo, init_ne_elo))
+#1564.144
+
+```
+
+Elo ratings for 2019 season
+
+```{r}
+for (game_i in 1:nrow(nfl_games_19)) {
+
+  # Which teams are we looking at?
+  home_team <- nfl_games_19$home_team[game_i]
+  away_team <- nfl_games_19$away_team[game_i]
+  # What was the observed score by the home team?
+  home_score <- nfl_games_19$game_outcome[game_i]
+  # Week number?
+  game_week <- nfl_games_19$week[game_i]
+
+  # What was each team's rating from their latest game?
+  home_rating <- nfl_elo_ratings %>%
+    filter(team == home_team) %>%
+    arrange(desc(week)) %>%
+    slice(1) %>%
+    pull(elo_rating)
+  away_rating <- nfl_elo_ratings %>%
+    filter(team == away_team) %>%
+    arrange(desc(week)) %>%
+    slice(1) %>%
+    pull(elo_rating)
+
+  # Now get their new ratings:
+  new_home_rating <- calc_new_rating(
+    home_rating, home_score,
+    calc_expected_score(home_rating, away_rating)
+  )
+  # Opposite for away team:
+  new_away_rating <- calc_new_rating(
+    away_rating, 1 - home_score,
+    calc_expected_score(away_rating, home_rating)
+  )
+
+  # Finally - join to the nfl_elo_ratings table each team's new ratings for the week:
+  updated_ratings <- tibble(
+    team = c(home_team, away_team),
+    elo_rating = c(new_home_rating, new_away_rating),
+    week = rep(game_week, 2)
+  )
+  nfl_elo_ratings <- nfl_elo_ratings %>%
+    bind_rows(updated_ratings)
+}
+```
+
+What do our final ratings look like?
+
+```{r}
+nfl_elo_ratings %>% 
+   filter(week == 8) %>%
+   arrange(desc(elo_rating))
+```
+
+Let’s plot the ratings over the season:
+
+```{r}
+nfl_elo_ratings %>%
+  ggplot(aes(x = week, y = elo_rating, color = team)) +
+  geom_line() +
+  theme_bw() +
+  labs(
+    x = "Week", 
+    y = "Elo rating",
+    title = "NFL Elo ratings in 2019 season")
+```
+
+```{r}
+ # First read in the team colors data from the website:
+nfl_team_colors <- read_csv("http://www.stat.cmu.edu/cmsac/football/data/nfl_team_colors.csv")
+nfl_team_colors <- nfl_team_colors %>%
+  filter(abbr %in% unique(nfl_elo_ratings$team)) %>%
+  mutate(primary = ifelse(abbr %in% c(
+    "OAK", "PIT", "SEA", "TEN",
+    "JAX", "NE", "ATL"
+  ),
+  secondary, primary
+  ))
+
+# Create a dataset that has each team's initial Elo rating
+nfl_team_start <- nfl_elo_ratings %>%
+  filter(week == 0) %>%
+  inner_join(nfl_team_colors, by = c("team" = "abbr")) %>%
+  arrange(desc(elo_rating))
+
+# Need ggrepel:
+library(ggrepel)
+
+division_plots <- lapply(
+  sort(unique(nfl_team_start$division)),
+  function(nfl_division) {
+
+    # Pull out the teams in the division
+    division_teams <- nfl_team_start %>%
+      filter(division == nfl_division) %>%
+      mutate(team = fct_reorder(team, desc(elo_rating)))
+
+    # Get the Elo ratings data just for these teams:
+    division_data <- nfl_elo_ratings %>%
+      filter(team %in% division_teams$team) %>%
+      mutate(team = factor(team,
+        levels = levels(division_teams$team)
+      )) %>%
+      # Make text labels for them:
+      mutate(team_label = if_else(week == min(week),
+        as.character(team),
+        NA_character_
+      ))
+
+    # Now make the full plot
+    nfl_elo_ratings %>%
+      # Plot all of the other teams as gray lines:
+      filter(!(team %in% division_teams$team)) %>%
+      ggplot(aes(x = week, y = elo_rating, group = team)) +
+      geom_line(color = "gray", alpha = 0.5) +
+      # But display the division teams with their colors:
+      geom_line(
+        data = division_data,
+        aes(
+          x = week, y = elo_rating, group = team,
+          color = team
+        )
+      ) +
+      geom_label_repel(
+        data = division_data,
+        aes(
+          label = team_label,
+          color = team
+        ), nudge_x = 1, na.rm = TRUE,
+        direction = "y"
+      ) +
+      scale_color_manual(values = division_teams$primary, guide = FALSE) +
+      scale_x_continuous(
+        limits = c(0, 8),
+        breaks = c(1:8)
+      ) +
+      theme_bw() +
+      labs(
+        x = "Week", y = "Elo rating",
+        title = paste0("Division: ", nfl_division)
+      )
+  }
+)
+# Display the grid of plots with cowplot!
+library(cowplot)
+plot_grid(plotlist = division_plots, ncol = 4, align = "hv")
+```
+
