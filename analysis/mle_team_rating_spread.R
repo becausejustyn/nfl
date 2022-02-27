@@ -19,7 +19,7 @@ games <- nfl_elo_latest %>%
 current_season <- pull(nfl_elo_latest, season) %>% max()
 
 #neutral games
-glue("There was {games %>% nrow} games played in {current_season}. {pull(games, neutral) %>% sum()} of those games were played on a neutral field.")
+glue::glue("There was {games %>% nrow} games played in {current_season}. {pull(games, neutral) %>% sum()} of those games were played on a neutral field.")
 
 #4 is less than 1% of games
 
@@ -33,7 +33,9 @@ home_forecast <- function(home_rating, visitor_rating, home_edge) {
 #Create the ratings vector 
 
 #vector with every nfl team
-teams <- distinct(games, home) %>% arrange(home) %>% pull()
+teams <- distinct(games, home) %>% 
+  arrange(home) %>% 
+  pull()
 
 teams %>% length() == 32 # there's 32 NFL teams
 
