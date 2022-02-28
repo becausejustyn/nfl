@@ -79,18 +79,17 @@ pbp_mut <- pbp %>%
     home = if_else(posteam == home_team, 1, 0),
     wind = ifelse(is.na(wind) == T, min(wind, na.rm = T), wind),
     temp = ifelse(is.na(temp) == T, 75, temp),
-    opponent = paste(season.x, defteam, sep = "_"),
-    team = paste(season.x, posteam, sep = "_"),
+    opponent = paste(season, defteam, sep = "_"),
+    team = paste(season, posteam, sep = "_"),
     player_id = passer_id,
-    season = as.factor(season.x)
+    season = as.factor(season)
   ) %>%
   dplyr::filter(
     play_type == "pass",
-    game_type == "REG",
+    season_type == "REG",
     wp >= .20,
     wp <= .80,
-    game_half != "Overtime",
-    season.x > 2005
+    game_half != "Overtime"
   ) %>%
   select(epa, temp, wind, home, season, player_id, pos_coach, def_coach, team, opponent, wp)
 

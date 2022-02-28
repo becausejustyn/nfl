@@ -1,6 +1,8 @@
 ---
 title: "R Notebook"
-output: html_notebook
+output: 
+  html_document: 
+    self_contained: no
 ---
 
 ```{r}
@@ -9,10 +11,7 @@ library(tidymodels)
 ```
 
 ```{r}
-set.seed(37)
-seasons <- 2016:2019
-
-pbp_raw <- purrr::map_df(seasons, function(x) {
+pbp_raw <- purrr::map_df(c(2016:2021), function(x) {
   readRDS(
       glue::glue("~/Documents/nfl/data/pbp/play_by_play_{x}.rds")
   )
@@ -271,7 +270,7 @@ pbp_pred_lr %>%
 
 ```{r}
 pbp_pred_lr %>% 
-  filter(posteam == "NE")
+  filter(posteam == "PHI")
 ```
 
 ## Random Forest

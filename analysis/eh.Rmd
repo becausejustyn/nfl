@@ -341,13 +341,5 @@ wt_mov_avg_local <- function(var, weight, window, type, moving = T) {
 ```
 
 
-```{r}
-pbp %>%
-  group_by(passer_player_name) %>%
-  summarise(
-    longest_pass = max(air_yards, na.rm = TRUE)
-  ) %>%
-  arrange(-longest_pass)
-```
 
 

@@ -1,6 +1,5 @@
 library(nflfastR)
 library(tidyverse)
-library(ggthemes)
 library(becausejustynfun)
 
 pbp <- purrr::map_df(c(2011:2021), function(x) {
@@ -39,7 +38,7 @@ first_down <- pbp %>%
   ) %>%
   filter(
     type == 'Stop', 
-    tot_num > 99,
+    tot_num >= 10,
     yards_gained < 10
     ) 
 
@@ -51,12 +50,12 @@ first_down %>%
   # ylim(0,100)+
   scale_x_continuous(breaks = seq(-13, 9)) +
   scale_y_continuous(breaks = seq(0, 70, 10)) +
-  white_theme() +
+  #white_theme() +
   theme(axis.title = element_text()) +
   labs(
     x = 'Yards Gained on First Down',
     y = 'Series Stop Rate (%)',
     title = 'How Important is Limiting Yards on 1st Down?',
-    subtitle = 'Stop = Punt, Turnover on Downs, Safety, Turnover | 2001-2021 | min 100 occurrences',
+    subtitle = 'Stop = Punt, Turnover on Downs, Safety, Turnover | 2021 | min 10 occurrences',
     caption = 'Data: nflfastR'
   )
