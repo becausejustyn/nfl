@@ -138,7 +138,7 @@ regular_season_metrics <- function(pbp) {
 
 }
 
-regular_season_metrics(pbp)
+metrics <- regular_season_metrics(pbp)
 
 # Create dataframe for season long outcomes and stats
 
