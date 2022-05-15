@@ -16,7 +16,7 @@ pbp <- read_rds("~/pbp_2021.rds")
 ```
 
 ```{r}
-pbp %>%
+pbp2 <- pbp %>%
   select(
     game_id, week, season,
     home_team, away_team,
@@ -29,6 +29,23 @@ pbp %>%
       home_score == away_score ~ 0.5,
       TRUE ~ 0
   ))
+
+
+pbp1 <- pbp %>%
+  select(
+    game_id, week, season,
+    home_team, away_team,
+    home_score, away_score
+  ) %>%
+  group_by(game_id) %>%
+  slice(n()) %>%
+  mutate(
+    game_outcome = case_when(
+      home_score > away_score ~ 1,
+      home_score == away_score ~ 0.5,
+      TRUE ~ 0
+  )) %>% 
+  ungroup()
 ```
 
 The expected score for the home team is:
