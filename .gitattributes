@@ -8,13 +8,9 @@
 #
 
 # Documents
-*.bibtex   text diff=bibtex
-*.doc      diff=astextplain
-*.DOC      diff=astextplain
-*.docx     diff=astextplain
-*.DOCX     diff=astextplain
-*.dot      diff=astextplain
-*.DOT      diff=astextplain
-*.pdf      diff=astextplain
-*.PDF      diff=astextplain
-*.rtf      diff=astextplain
+docs/* linguist-detectable=false
+*.html linguist-detectable=false
+*.css linguist-detectable=false
+*.js linguist-detectable=false
+*.tex linguist-detectable=false
+
